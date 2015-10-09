@@ -1,0 +1,705 @@
+# HG changeset patch
+# Parent aeb482b330246ee018f34e0777595dcf97c6662a
+
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -277,12 +277,15 @@
+                       help="Simulate two systems attached with an ethernet link")
+     parser.add_option("--multi", action="store_true",
+                       help="Parallel multi gem5 simulation.")
++    parser.add_option("--is-switch", action="store_true")
++    parser.add_option("--num-nodes", default=2, action="store", type="int",
++                      help="Number of simulated nodes")
+     parser.add_option("--multi-rank", default=0, action="store", type="int",
+                       help="Rank of this system within the multi gem5 run.")
+     parser.add_option("--multi-size", default=0, action="store", type="int",
+                       help="Number of gem5 processes within the multi gem5 run.")
+     parser.add_option("--multi-server-name",
+-                      default="localhost",
++                      default="127.0.0.1",
+                       action="store", type="string",
+                       help="Name of the message server host\nDEFAULT: localhost")
+     parser.add_option("--multi-server-port",
+diff --git a/configs/example/sw.py b/configs/example/sw.py
+new file mode 100644
+--- /dev/null
++++ b/configs/example/sw.py
+@@ -0,0 +1,84 @@
++# Copyright (c) 2015 The University of Wisconsin Madison
++# All rights reserved
++#
++# The license below extends only to copyright in the software and shall
++# not be construed as granting a license to any other intellectual
++# property including but not limited to intellectual property relating
++# to a hardware implementation of the functionality of the software
++# licensed hereunder.  You may use the software subject to the license
++# terms below provided that you ensure that this notice is replicated
++# unmodified and in its entirety in all distributions of the software,
++# modified or unmodified, in source code or in binary form.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are
++# met: redistributions of source code must retain the above copyright
++# notice, this list of conditions and the following disclaimer;
++# redistributions in binary form must reproduce the above copyright
++# notice, this list of conditions and the following disclaimer in the
++# documentation and/or other materials provided with the distribution;
++# neither the name of the copyright holders nor the names of its
++# contributors may be used to endorse or promote products derived from
++# this software without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++#
++# Authors: Mohammad Alian
++
++# This is an example of an n port network switch (star topology) to work in
++# pd-gem5. Users can extend this to have different different topologies
++
++import optparse
++import sys
++
++import m5
++from m5.defines import buildEnv
++from m5.objects import *
++from m5.util import addToPath, fatal
++
++addToPath('../common')
++
++import Simulation
++import Options
++
++def build_switch(options):
++    # instantiate an EtherSwitch with "num_node" ports. Also pass along
++    # timing parameters
++    switch = EtherSwitch(port_count = options.num_nodes)
++    # instantiate etherlinks to connect switch box ports to ethertap objects
++    switch.portlink = [MultiEtherLink(speed = options.ethernet_linkspeed,
++                                      delay = options.ethernet_linkdelay,
++                                      multi_rank = options.multi_rank,
++                                      multi_size = options.multi_size,
++                                      server_name = options.multi_server_name,
++                                      server_port = options.multi_server_port,
++                                      sync_start = options.multi_sync_start,
++                                      sync_repeat = options.multi_sync_repeat,
++                                      is_switch = True,
++                                      num_nodes = options.num_nodes)
++                       for i in xrange(options.num_nodes)]
++
++    for (i, link) in enumerate(switch.portlink):
++        link.int0 = switch.interface[i]
++
++    return switch
++# Add options
++parser = optparse.OptionParser()
++Options.addCommonOptions(parser)
++Options.addFSOptions(parser)
++(options, args) = parser.parse_args()
++
++system = build_switch(options)
++root = Root(full_system = True, system = system)
++Simulation.run(options, root, None, None)
++
+diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
+--- a/src/dev/Ethernet.py
++++ b/src/dev/Ethernet.py
+@@ -72,6 +72,8 @@
+     sync_repeat = Param.Latency('10us', "multi sync barrier repeat")
+     server_name = Param.String('localhost', "Message server name")
+     server_port = Param.UInt32('2200', "Message server port")
++    is_switch = Param.Bool(False, "true if this a link in etherswitch")
++    num_nodes = Param.UInt32('2', "Number of simulate nodes")
+ 
+ class EtherBus(EtherObject):
+     type = 'EtherBus'
+diff --git a/src/dev/multi_etherlink.cc b/src/dev/multi_etherlink.cc
+--- a/src/dev/multi_etherlink.cc
++++ b/src/dev/multi_etherlink.cc
+@@ -94,7 +94,8 @@
+     // create the multi (TCP) interface to talk to the peer gem5 processes.
+     multiIface = new TCPIface(p->server_name, p->server_port,
+                               p->multi_rank, p->multi_size,
+-                              p->sync_start, sync_repeat, this);
++                              p->sync_start, sync_repeat, this, p->is_switch,
++                              p->num_nodes);
+ 
+     localIface = new LocalIface(name() + ".int0", txLink, rxLink, multiIface);
+ }
+diff --git a/src/dev/multi_iface.cc b/src/dev/multi_iface.cc
+--- a/src/dev/multi_iface.cc
++++ b/src/dev/multi_iface.cc
+@@ -54,7 +54,7 @@
+ #include "sim/sim_exit.hh"
+ #include "sim/sim_object.hh"
+ 
+-
++using namespace std;
+ MultiIface::Sync *MultiIface::sync = nullptr;
+ MultiIface::SyncEvent *MultiIface::syncEvent = nullptr;
+ unsigned MultiIface::recvThreadsNum = 0;
+@@ -78,8 +78,44 @@
+     }
+ }
+ 
++MultiIface::SyncSwitch::SyncSwitch(int num_nodes)
++{
++    waitNum = num_nodes;
++    needExit = false;
++    needCkpt = false;
++    doExit = false;
++    doCkpt = false;
++    nextAt = std::numeric_limits<Tick>::max();
++    nextRepeat = std::numeric_limits<Tick>::max();
++}
++
++MultiIface::SyncNode::SyncNode()
++{
++    waitNum = 0;
++    needExit = false;
++    needCkpt = false;
++    doExit = false;
++    doCkpt = false;
++    nextAt = std::numeric_limits<Tick>::max();
++    nextRepeat = std::numeric_limits<Tick>::max();
++}
++
++/*
++MultiIface::MultiIface(unsigned multi_rank,
++                       unsigned multi_size,
++                       Tick sync_start,
++                       Tick sync_repeat,
++                       EventManager *em,
++                       bool is_switch) :
++    syncStart(sync_start), syncRepeat(sync_repeat),
++    recvThread(nullptr), recvScheduler(em),
++    rank(multi_rank), size(multi_size)
++{
++*/
++
++
+ void
+-MultiIface::Sync::run(bool same_tick)
++MultiIface::SyncNode::run(bool same_tick)
+ {
+     std::unique_lock<std::mutex> sync_lock(lock);
+     Header header;
+@@ -91,7 +127,6 @@
+     header.sendTick = curTick();
+     header.sameTick = same_tick;
+     header.syncRepeat = nextRepeat;
+-
+     MultiIface::master->sendCmd(header);
+     // now wait until all receiver threads complete the synchronisation
+     auto lf = [this]{ return waitNum == 0; };
+@@ -99,8 +134,79 @@
+     // global barrier is done
+ }
+ 
++
+ void
+-MultiIface::Sync::progress(Tick max_req_tick,
++MultiIface::SyncSwitch::run(bool same_tick)
++{
++    std::unique_lock<std::mutex> sync_lock(lock);
++    Header header;
++
++    auto lf = [this]{ return waitNum == 0; };
++    cv.wait(sync_lock, lf);
++
++    assert(waitNum == 0);
++    waitNum = MultiIface::recvThreadsNum;
++    // initiate the global synchronisation
++    header.msgType = MsgType::cmdSyncAck;
++    header.sendTick = curTick();
++    header.sameTick = same_tick;
++    header.syncRepeat = nextRepeat;
++
++    MultiIface::master->sendCmd(header);
++    // now wait until all receiver threads complete the synchronisation
++    // global barrier is done
++}
++
++void
++MultiIface::SyncSwitch::progress(Tick max_req_tick,
++                           Tick next_repeat,
++                           bool do_ckpt,
++                           bool do_exit)
++{
++    std::unique_lock<std::mutex> sync_lock(lock);
++    assert(waitNum > 0);
++//    assert(waitNum == 1 || (nextAt == max_req_tick && nextRepeat == next_repeat &&
++//                            doCkpt == do_ckpt && doExit == do_exit));
++
++    nextAt = max_req_tick;
++    nextRepeat = next_repeat;
++    doCkpt = false;//do_ckpt;
++    doExit = false;//do_exit;
++
++    waitNum--;
++    // Notify the simulation thread if the on-going sync is complete
++    if (waitNum == 0) {
++        sync_lock.unlock();
++        cv.notify_one();
++    }
++}
++
++void
++MultiIface::SyncNode::progress(Tick max_req_tick,
++                           Tick next_repeat,
++                           bool do_ckpt,
++                           bool do_exit)
++{
++    std::unique_lock<std::mutex> sync_lock(lock);
++    assert(waitNum > 0);
++    assert(waitNum == 1 || (nextAt == max_req_tick && nextRepeat == next_repeat &&
++                            doCkpt == do_ckpt && doExit == do_exit));
++
++    nextAt = max_req_tick;
++    nextRepeat = next_repeat;
++    doCkpt = false;//do_ckpt;
++    doExit = false;//do_exit;
++
++    waitNum--;
++    // Notify the simulation thread if the on-going sync is complete
++    if (waitNum == 0) {
++        sync_lock.unlock();
++        cv.notify_one();
++    }
++}
++
++/*void
++MultiIface::SyncSwitch::progress(Tick max_req_tick,
+                            Tick next_repeat,
+                            bool do_ckpt,
+                            bool do_exit)
+@@ -121,7 +227,7 @@
+         sync_lock.unlock();
+         cv.notify_one();
+     }
+-}
++}*/
+ 
+ void
+ MultiIface::Sync::requestCkpt()
+@@ -409,19 +515,25 @@
+                        unsigned multi_size,
+                        Tick sync_start,
+                        Tick sync_repeat,
+-                       EventManager *em) :
++                       EventManager *em,
++                       bool is_switch, int num_nodes) :
+     syncStart(sync_start), syncRepeat(sync_repeat),
+     recvThread(nullptr), recvScheduler(em),
+     rank(multi_rank), size(multi_size)
+ {
+     DPRINTF(MultiEthernet, "MultiIface() ctor rank:%d\n",multi_rank);
+     MultiHeaderPkt::clearAddress(networkAddress);
++    isMaster = false;
+     if (master == nullptr) {
+         assert(sync == nullptr);
+         assert(syncEvent == nullptr);
+-        sync = new Sync();
++        if (is_switch)
++            sync = new SyncSwitch(num_nodes);
++        else
++            sync = new SyncNode();
+         syncEvent = new SyncEvent();
+         master = this;
++        isMaster = true;
+     }
+ }
+ 
+@@ -532,6 +644,7 @@
+                          "Message server closed connection, "
+                          "simulation is exiting");
+         }
++
+         // We got a valid multi header packet, let's process it
+         if (header.msgType == MsgType::dataDescriptor) {
+             recvPacket(header, new_packet);
+@@ -540,7 +653,7 @@
+                                      header.sendDelay,
+                                      header.senderRank);
+         } else {
+-            assert(header.msgType == MsgType::cmdSyncAck);
++            //assert(header.msgType == MsgType::cmdSyncAck);
+             // everything else must be synchronisation related command
+             sync->progress(header.maxSyncReqTick,
+                            header.syncRepeat,
+@@ -555,6 +668,7 @@
+ {
+     assert(recvThread == nullptr);
+ 
++    establishConnection();
+     recvThread = new std::thread(&MultiIface::recvThreadFunc,
+                                  this,
+                                  recv_done,
+@@ -631,7 +745,7 @@
+     // Now that everything is up-to-date give the underlying messaging system
+     // a chance to access any information (e.g. networkAddress restored from
+     // a checkpoint)
+-    initTransport();
++    //initTransport();
+ 
+     // If this run is a resume from a checkpoint than we schedule the first
+     // periodic sync in drainResume()
+diff --git a/src/dev/multi_iface.hh b/src/dev/multi_iface.hh
+--- a/src/dev/multi_iface.hh
++++ b/src/dev/multi_iface.hh
+@@ -114,7 +114,7 @@
+      */
+     class Sync : public Serializable
+     {
+-      private:
++      protected:
+         /**
+          * The lock to protect access to the Sync object.
+          */
+@@ -173,21 +173,14 @@
+         /**
+          *  Core method to perform a full multi sync.
+          */
+-        void run(bool same_tick);
++        virtual void run(bool same_tick) = 0;
+         /**
+          * Callback when the receiver thread gets a sync ack message.
+          */
+-        void progress(Tick max_req_tick,
++        virtual void progress(Tick max_req_tick,
+                       Tick next_repeat,
+                       bool do_ckpt,
+-                      bool do_exit);
+-
+-
+-        Sync() : waitNum(0), needExit(false), needCkpt(false),
+-                 doExit(false), doCkpt(false),
+-                 nextAt(std::numeric_limits<Tick>::max()),
+-                 nextRepeat(std::numeric_limits<Tick>::max()) {}
+-        ~Sync() {}
++                      bool do_exit) = 0;
+ 
+         void requestCkpt();
+         void requestExit();
+@@ -200,6 +193,43 @@
+ 
+     };
+ 
++    class SyncNode: public Sync
++    {
++        //friend Sync;
++        public:
++/*        SyncNode() : waitNum(0), needExit(false), needCkpt(false),
++                 doExit(false), doCkpt(false),
++                 nextAt(std::numeric_limits<Tick>::max()),
++                 nextRepeat(std::numeric_limits<Tick>::max()) {}
++        ~SyncNode() {}
++*/
++        SyncNode();
++        ~SyncNode() {}
++        void run(bool same_tick);
++        void progress(Tick max_req_tick,
++                           Tick next_repeat,
++                           bool do_ckpt,
++                           bool do_exit);
++    };
++
++    class SyncSwitch: public Sync
++    {
++        public:
++        SyncSwitch(int num_nodes);
++        ~SyncSwitch() {}
++/*        SyncSwitch() : waitNum(0), needExit(false), needCkpt(false),
++                 doExit(false), doCkpt(false),
++                 nextAt(std::numeric_limits<Tick>::max()),
++                 nextRepeat(std::numeric_limits<Tick>::max()) {}
++        ~SyncSwitch() {}
++*/
++        void run(bool same_tick);
++        void progress(Tick max_req_tick,
++                           Tick next_repeat,
++                           bool do_ckpt,
++                           bool do_exit);
++
++    };
+ 
+     /**
+      * The global event to schedule peridic multi sync. It is used as a
+@@ -430,6 +460,8 @@
+      */
+     MultiHeaderPkt::AddressType networkAddress;
+ 
++    bool isMaster;
++
+   private:
+     /**
+      * Total number of receiver threads (in this gem5 process).
+@@ -487,6 +519,11 @@
+      * restored from a checkpoint).
+      */
+     virtual void initTransport() = 0;
++
++    /**
++    */
++    virtual void establishConnection() = 0;
++
+     /**
+      * The function executed by a receiver thread.
+      */
+@@ -505,7 +542,9 @@
+                unsigned multi_size,
+                Tick sync_start,
+                Tick sync_repeat,
+-               EventManager *em);
++               EventManager *em,
++               bool is_switch,
++               int num_nodes);
+ 
+     virtual ~MultiIface();
+     /**
+diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
+--- a/src/dev/tcp_iface.cc
++++ b/src/dev/tcp_iface.cc
+@@ -48,6 +48,7 @@
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <netinet/tcp.h>
+ 
+ #include <cerrno>
+ #include <cstring>
+@@ -66,39 +67,111 @@
+ using namespace std;
+ 
+ vector<int> TCPIface::sockRegistry;
++int TCPIface::fdStatic = -1;
++bool TCPIface::anyListening = false;
+ 
+-TCPIface::TCPIface(string server_name, unsigned server_port,
++TCPIface::TCPIface(string server_ip, unsigned server_port,
+                    unsigned multi_rank, unsigned multi_size,
+                    Tick sync_start, Tick sync_repeat,
+-                   EventManager *em) :
+-    MultiIface(multi_rank, multi_size, sync_start, sync_repeat, em)
++                   EventManager *em, bool is_switch, int num_nodes) :
++    MultiIface(multi_rank, multi_size, sync_start, sync_repeat, em,
++               is_switch, num_nodes),
++    port(server_port), ip(server_ip), isSwitch(is_switch), listening(false)
+ {
+-    struct addrinfo addr_hint, *addr_results;
++}
++bool
++TCPIface::listen(int port) {
++    if (listening)
++        panic("Socket already listening!");
++
++    struct sockaddr_in sockaddr;
+     int ret;
+ 
+-    string port_str = to_string(server_port);
++    fdStatic = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
++    panic_if(fdStatic < 0, "socket() failed: %s", strerror(errno));
+ 
+-    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+-    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
++    sockaddr.sin_family = PF_INET;
++    sockaddr.sin_addr.s_addr = INADDR_ANY;
++    sockaddr.sin_port = htons(port);
++    // finally clear sin_zero
++    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
++    ret = bind(fdStatic, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
+ 
+-    bzero(&addr_hint, sizeof(addr_hint));
+-    addr_hint.ai_family = AF_INET;
+-    addr_hint.ai_socktype = SOCK_STREAM;
+-    addr_hint.ai_protocol = IPPROTO_TCP;
++    if (ret != 0) {
++        if (ret == -1 && errno != EADDRINUSE)
++            panic("ListenSocket(listen): bind() failed!");
++        return false;
++    }
+ 
+-    ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
+-                      &addr_hint, &addr_results);
+-    panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
++    if (::listen(fdStatic, 24) == -1) {
++        if (errno != EADDRINUSE)
++            panic("ListenSocket(listen): listen() failed!");
+ 
+-    DPRINTF(MultiEthernet, "Connecting to %s:%u\n",
+-            server_name.c_str(), port_str.c_str());
++        return false;
++    }
+ 
+-    ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
+-                    addr_results->ai_addrlen);
+-    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
++    listening = true;
++    anyListening = true;
++    return true;
++}
++void
++TCPIface::establishConnection()
++{
++    if (isSwitch) {
++        if (isMaster) {
++            while (!listen(port)) {
++                DPRINTF(MultiEthernet, "TCPIface(listen): Can't bind port %d\n"
++                        , port);
++                port++;
++            }
++            inform("tcp_iface listening on port %d", port);
++        }
++        accept();
++    } else {
++        connect(ip, port);
++    }
+ 
+-    freeaddrinfo(addr_results);
+-    // add our socket to the static registry
++}
++void
++TCPIface::accept()
++{
++    struct sockaddr_in sockaddr;
++    socklen_t slen = sizeof (sockaddr);
++    sock = ::accept(fdStatic, (struct sockaddr *)&sockaddr, &slen);
++    if (sock != -1) {
++        int i = 1;
++        if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&i,
++                         sizeof(i)) < 0)
++            warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
++    }
++    sockRegistry.push_back(sock);
++}
++
++void
++TCPIface::connect(std::string server_name, int port)
++{
++
++    sock = socket(PF_INET, SOCK_STREAM, 0);
++    if (sock < 0)
++        panic("Can't create socket:%s !", strerror(errno));
++
++     int i = 1;
++     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&i,
++                         sizeof(i)) < 0)
++            warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
++
++    struct sockaddr_in sockaddr;
++    sockaddr.sin_family = PF_INET;
++    if(inet_pton(PF_INET, server_name.c_str(), &sockaddr.sin_addr)<=0) {
++        panic("\n inet_pton error occured\n");
++    }
++    sockaddr.sin_port = htons(port);
++    // finally clear sin_zero
++    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
++    int ret = ::connect(sock, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
++    if (ret != 0) {
++        panic("ConnectSocket(connect): connect() failed!");
++    }
+     sockRegistry.push_back(sock);
+ }
+ 
+diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
+--- a/src/dev/tcp_iface.hh
++++ b/src/dev/tcp_iface.hh
+@@ -67,6 +67,14 @@
+      */
+     int sock;
+ 
++    int port;
++    std::string ip;
++    bool isSwitch;
++
++    bool listening;
++    static bool anyListening;
++    static int fdStatic;
++
+     /**
+      * Registry for all sockets to the server opened by this gem5 process.
+      */
+@@ -92,7 +100,13 @@
+      * @param length Exact size of the expected message in bytes.
+      */
+     bool recvTCP(int sock, void *buf, unsigned length);
+-
++    bool listen(int port);
++    void accept();
++    void connect(std::string server_name, int port);
++    int getfdStatic() const { return fdStatic; }
++    bool islistening() const { return listening; }
++    bool anyislistening() const { return anyListening; }
++    void establishConnection();
+ 
+   protected:
+ 
+@@ -121,7 +135,8 @@
+      */
+     TCPIface(std::string server_name, unsigned server_port,
+              unsigned multi_rank, unsigned multi_size,
+-             Tick sync_start, Tick sync_repeat, EventManager *em);
++             Tick sync_start, Tick sync_repeat, EventManager *em,
++             bool is_switch, int num_nodes);
+ 
+     ~TCPIface() M5_ATTR_OVERRIDE;
+ };
+diff --git a/util/multi/gem5-multi.sh b/util/multi/gem5-multi.sh
+--- a/util/multi/gem5-multi.sh
++++ b/util/multi/gem5-multi.sh
+@@ -137,7 +137,7 @@
+ # host1 nslots1 host2 nslots2 ...
+ # (This is what LSF does by default.)
+ NH=0
+-[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="localhost $NNODES"
++[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="127.0.0.1 $NNODES"
+ host=""
+ for hc in $LSB_MCPU_HOSTS
+ do
+@@ -230,10 +230,20 @@
+ ENV_ARGS="LD_LIBRARY_PATH=$LD_LIBRARY_PATH M5_PATH=$M5_PATH"
+ 
+ # launch the mesage server and check if it has started okay
+-$TCP_SERVER $GEM5_DEBUG $NNODES $SERVER_PORT &>log.server &
++#$TCP_SERVER $GEM5_DEBUG $NNODES $SERVER_PORT &>log.server &
++# launch switch gem5
++echo "launch switch gem5 process ..."
++$GEM5_EXE -d $(pwd)/m5out.switch $M5_PATH/configs/example/sw.py --is-switch --num-nodes=$NNODES --multi-server-port=$SERVER_PORT &>log.server &
+ SERVER_PID=$!
+-sleep 2
+-kill -0 $SERVER_PID || { echo "Failed to start message server"; exit -1; }
++sleep 10
++LINE=$(grep -r "tcp_iface listening on port" log.server)
++
++IFS=' ' read -ra ADDR <<< "$LINE"
++# acutal port that switch is listening on may be different 
++# from what we specified if the port was busy
++SERVER_PORT=${ADDR[5]}
++
++#kill -0 $SERVER_PID || { echo "Failed to start message server"; exit -1; }
+ 
+ # Now launch all the gem5 processes with ssh.
+ echo "START $(date)"
+diff --git a/util/multi/test/test-2nodes-AArch64.sh b/util/multi/test/test-2nodes-AArch64.sh
+old mode 100644
+new mode 100755
+--- a/util/multi/test/test-2nodes-AArch64.sh
++++ b/util/multi/test/test-2nodes-AArch64.sh
+@@ -60,7 +60,7 @@
+ #DEBUG_FLAGS="--debug-flags=MultiEthernet"
+ #CHKPT_RESTORE="-r1"
+ 
+-NNODES=2
++NNODES=10
+ 
+ $GEM5_MULTI_SH -n $NNODES $GEM5_EXE $DEBUG_FLAGS $SYS_CONFIG   \
+     --cpu-type=atomic                                          \
