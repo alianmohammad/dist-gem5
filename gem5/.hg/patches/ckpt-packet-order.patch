@@ -1,0 +1,1521 @@
+# HG changeset patch
+# Parent 0ab2c83480614a273b4489e4bcd435044747943e
+
+diff --git a/src/dev/SConscript b/src/dev/SConscript
+--- a/src/dev/SConscript
++++ b/src/dev/SConscript
+@@ -61,7 +61,6 @@
+ Source('etherdump.cc')
+ Source('etherint.cc')
+ Source('etherlink.cc')
+-Source('multi_packet.cc')
+ Source('multi_iface.cc')
+ Source('multi_etherlink.cc')
+ Source('tcp_iface.cc')
+@@ -93,6 +92,7 @@
+ DebugFlag('Ethernet')
+ DebugFlag('MultiEthernet')
+ DebugFlag('MultiEthernetPkt')
++DebugFlag('MultiEthernetCmd')
+ DebugFlag('EthernetCksum')
+ DebugFlag('EthernetDMA')
+ DebugFlag('EthernetData')
+diff --git a/src/dev/etherpkt.cc b/src/dev/etherpkt.cc
+--- a/src/dev/etherpkt.cc
++++ b/src/dev/etherpkt.cc
+@@ -52,19 +52,3 @@
+         arrayParamIn(cp, base + ".data", data, length);
+ }
+ 
+-void
+-EthPacketData::packAddress(uint8_t *src_addr,
+-                           uint8_t *dst_addr,
+-                           unsigned &nbytes)
+-{
+-    Net::EthHdr *hdr = (Net::EthHdr *)data;
+-    assert(hdr->src().size() == hdr->dst().size());
+-    if (nbytes < hdr->src().size())
+-        panic("EthPacketData::packAddress() Buffer overflow");
+-
+-    memcpy(dst_addr, hdr->dst().bytes(), hdr->dst().size());
+-    memcpy(src_addr, hdr->src().bytes(), hdr->src().size());
+-
+-    nbytes = hdr->src().size();
+-}
+-
+diff --git a/src/dev/etherpkt.hh b/src/dev/etherpkt.hh
+--- a/src/dev/etherpkt.hh
++++ b/src/dev/etherpkt.hh
+@@ -71,18 +71,6 @@
+     ~EthPacketData() { if (data) delete [] data; }
+ 
+   public:
+-    /**
+-     * This function pulls out the MAC source and destination addresses from
+-     * the packet data and stores them in the caller specified buffers.
+-     *
+-     * @param src_addr The buffer to store the source MAC address.
+-     * @param dst_addr The buffer to store the destination MAC address.
+-     * @param length This is an inout parameter. The caller stores in this
+-     * the size of the address buffers. On return, this will contain the
+-     * actual address size stored in the buffers. (We assume that source
+-     * address size is equal to that of the destination address.)
+-     */
+-    void packAddress(uint8_t *src_addr, uint8_t *dst_addr, unsigned &length);
+ 
+     void serialize(const std::string &base, CheckpointOut &cp) const;
+     void unserialize(const std::string &base, CheckpointIn &cp);
+diff --git a/src/dev/multi_iface.cc b/src/dev/multi_iface.cc
+--- a/src/dev/multi_iface.cc
++++ b/src/dev/multi_iface.cc
+@@ -63,8 +63,8 @@
+ void
+ MultiIface::Sync::init(Tick start_tick, Tick repeat_tick)
+ {
+-    if (start_tick < nextAt) {
+-        nextAt = start_tick;
++    if (start_tick < firstAt) {
++        firstAt = start_tick;
+         inform("Next multi synchronisation tick is changed to %lu.\n", nextAt);
+     }
+ 
+@@ -80,40 +80,29 @@
+ 
+ MultiIface::SyncSwitch::SyncSwitch(int num_nodes)
+ {
++    numNodes = num_nodes;
+     waitNum = num_nodes;
+-    needExit = false;
+-    needCkpt = false;
++    numExitReq = 0;
++    numCkptReq = 0;
+     doExit = false;
+     doCkpt = false;
+-    nextAt = std::numeric_limits<Tick>::max();
++    firstAt = std::numeric_limits<Tick>::max();
++    nextAt = 0;
+     nextRepeat = std::numeric_limits<Tick>::max();
+ }
+ 
+ MultiIface::SyncNode::SyncNode()
+ {
+     waitNum = 0;
+-    needExit = false;
+-    needCkpt = false;
++    needExit = ReqType::none;
++    needCkpt = ReqType::none;
+     doExit = false;
+     doCkpt = false;
+-    nextAt = std::numeric_limits<Tick>::max();
++    firstAt = std::numeric_limits<Tick>::max();
++    nextAt = 0;
+     nextRepeat = std::numeric_limits<Tick>::max();
+ }
+ 
+-/*
+-MultiIface::MultiIface(unsigned multi_rank,
+-                       unsigned multi_size,
+-                       Tick sync_start,
+-                       Tick sync_repeat,
+-                       EventManager *em,
+-                       bool is_switch) :
+-    syncStart(sync_start), syncRepeat(sync_repeat),
+-    recvThread(nullptr), recvScheduler(em),
+-    rank(multi_rank), size(multi_size)
+-{
+-*/
+-
+-
+ void
+ MultiIface::SyncNode::run(bool same_tick)
+ {
+@@ -125,13 +114,19 @@
+     // initiate the global synchronisation
+     header.msgType = MsgType::cmdSyncReq;
+     header.sendTick = curTick();
+-    header.sameTick = same_tick;
+     header.syncRepeat = nextRepeat;
++    header.needCkpt = needCkpt;
++    if (needCkpt != ReqType::none)
++        needCkpt = ReqType::pending;
++    header.needExit = needExit;
++    if (needCkpt != ReqType::none)
++        needCkpt = ReqType::pending;
+     MultiIface::master->sendCmd(header);
+     // now wait until all receiver threads complete the synchronisation
+     auto lf = [this]{ return waitNum == 0; };
+     cv.wait(sync_lock, lf);
+     // global barrier is done
++    assert(!same_tick || (nextAt == curTick()));
+ }
+ 
+ 
+@@ -140,38 +135,56 @@
+ {
+     std::unique_lock<std::mutex> sync_lock(lock);
+     Header header;
+-
+-    auto lf = [this]{ return waitNum == 0; };
+-    cv.wait(sync_lock, lf);
+-
++    if (waitNum > 0) {
++        auto lf = [this]{ return waitNum == 0; };
++        cv.wait(sync_lock, lf);
++    }
+     assert(waitNum == 0);
+-    waitNum = MultiIface::recvThreadsNum;
++    assert(!same_tick || (nextAt == curTick()));
++    waitNum = numNodes;
+     // initiate the global synchronisation
+     header.msgType = MsgType::cmdSyncAck;
+-    header.sendTick = curTick();
+-    header.sameTick = same_tick;
++    //header.sendTick = curTick();
++    header.sendTick = nextAt;
+     header.syncRepeat = nextRepeat;
+-
++    if (doCkpt || numCkptReq == numNodes) {
++        doCkpt = true;
++        header.needCkpt = ReqType::immediate;
++        numCkptReq = 0;
++    } else {
++        header.needCkpt = ReqType::none;
++    }
++    if (doExit || numExitReq == numNodes) {
++        doExit = true;
++        header.needExit = ReqType::immediate;
++    } else {
++        header.needExit = ReqType::none;
++    }
+     MultiIface::master->sendCmd(header);
+-    // now wait until all receiver threads complete the synchronisation
+-    // global barrier is done
+ }
+ 
+ void
+-MultiIface::SyncSwitch::progress(Tick max_req_tick,
+-                           Tick next_repeat,
+-                           bool do_ckpt,
+-                           bool do_exit)
++MultiIface::SyncSwitch::progress(Tick send_tick,
++                                 Tick sync_repeat,
++                                 ReqType need_ckpt,
++                                 ReqType need_exit)
+ {
+     std::unique_lock<std::mutex> sync_lock(lock);
+     assert(waitNum > 0);
+-//    assert(waitNum == 1 || (nextAt == max_req_tick && nextRepeat == next_repeat &&
+-//                            doCkpt == do_ckpt && doExit == do_exit));
+ 
+-    nextAt = max_req_tick;
+-    nextRepeat = next_repeat;
+-    doCkpt = false;//do_ckpt;
+-    doExit = false;//do_exit;
++    if (send_tick > nextAt)
++        nextAt = send_tick;
++    if (nextRepeat > sync_repeat)
++        nextRepeat = sync_repeat;
++
++    if (need_ckpt == ReqType::collective)
++        numCkptReq++;
++    if (need_ckpt == ReqType::immediate)
++        doCkpt = true;
++    if (need_exit == ReqType::collective)
++        numExitReq++;
++    if (need_exit == ReqType::immediate)
++        doExit = true;
+ 
+     waitNum--;
+     // Notify the simulation thread if the on-going sync is complete
+@@ -182,20 +195,18 @@
+ }
+ 
+ void
+-MultiIface::SyncNode::progress(Tick max_req_tick,
+-                           Tick next_repeat,
+-                           bool do_ckpt,
+-                           bool do_exit)
++MultiIface::SyncNode::progress(Tick max_send_tick,
++                               Tick next_repeat,
++                               ReqType do_ckpt,
++                               ReqType do_exit)
+ {
+     std::unique_lock<std::mutex> sync_lock(lock);
+     assert(waitNum > 0);
+-    assert(waitNum == 1 || (nextAt == max_req_tick && nextRepeat == next_repeat &&
+-                            doCkpt == do_ckpt && doExit == do_exit));
+ 
+-    nextAt = max_req_tick;
++    nextAt = max_send_tick;
+     nextRepeat = next_repeat;
+-    doCkpt = false;//do_ckpt;
+-    doExit = false;//do_exit;
++    doCkpt = (do_ckpt != ReqType::none);
++    doExit = (do_exit != ReqType::none);
+ 
+     waitNum--;
+     // Notify the simulation thread if the on-going sync is complete
+@@ -205,74 +216,67 @@
+     }
+ }
+ 
+-/*void
+-MultiIface::SyncSwitch::progress(Tick max_req_tick,
+-                           Tick next_repeat,
+-                           bool do_ckpt,
+-                           bool do_exit)
+-{
+-    std::unique_lock<std::mutex> sync_lock(lock);
+-    assert(waitNum > 0);
+-    assert(waitNum == 1 || (nextAt == max_req_tick && nextRepeat == next_repeat &&
+-                            doCkpt == do_ckpt && doExit == do_exit));
+-
+-    nextAt = max_req_tick;
+-    nextRepeat = next_repeat;
+-    doCkpt = do_ckpt;
+-    doExit = do_exit;
+-
+-    waitNum--;
+-    // Notify the simulation thread if the on-going sync is complete
+-    if (waitNum == 0) {
+-        sync_lock.unlock();
+-        cv.notify_one();
+-    }
+-}*/
+-
+ void
+-MultiIface::Sync::requestCkpt()
++MultiIface::SyncNode::requestCkpt(ReqType req)
+ {
+    std::lock_guard<std::mutex> sync_lock(lock);
+-   Header header;
+-   header.msgType = MsgType::cmdCkptReq;
+-   master->sendCmd(header);
+-   needCkpt = true;
++   assert(req != ReqType::none);
++   if (needCkpt != ReqType::none)
++       warn("Ckpt requested multiple times (req:%d)\n", static_cast<int>(req));
++   if (needCkpt == ReqType::none || req == ReqType::immediate)
++       needCkpt = req;
+ }
+ 
+ void
+-MultiIface::Sync::requestExit()
++MultiIface::SyncNode::requestExit(ReqType req)
+ {
+    std::lock_guard<std::mutex> sync_lock(lock);
+-   Header header;
+-   header.msgType = MsgType::cmdExitReq;
+-   master->sendCmd(header);
+-   needExit = true;
++   assert(req != ReqType::none);
++   if (needExit != ReqType::none)
++       warn("Exit requested multiple times (req:%d)\n", static_cast<int>(req));
++   if (needExit == ReqType::none || req == ReqType::immediate)
++       needExit = req;
+ }
+ 
+ void
+ MultiIface::Sync::drainComplete()
+ {
+-    if (!isCkptSyncDone) {
+-        // The first MultiIface object called right before writing the
+-        // checkpoint. We need to drain the underlying physical network here
++    if (doCkpt) {
++        // The first MultiIface object called this right before writing the
++        // checkpoint. We need to drain the underlying physical network here.
+         // Note that other gem5 peers may enter this barrier at different
+         // ticks due to draining.
+         run(false);
+         // Only the "first" MultiIface object has to perform the sync
+-        isCkptSyncDone = true;
++        doCkpt = false;
+     }
+ }
+ 
+ void
+-MultiIface::Sync::serialize(CheckpointOut &cp) const
++MultiIface::SyncNode::serialize(CheckpointOut &cp) const
+ {
+-    SERIALIZE_SCALAR(needExit);
++    int need_exit = static_cast<int>(needExit);
++    SERIALIZE_SCALAR(need_exit);
+ }
+ 
+ void
+-MultiIface::Sync::unserialize(CheckpointIn &cp)
++MultiIface::SyncNode::unserialize(CheckpointIn &cp)
+ {
+-    UNSERIALIZE_SCALAR(needExit);
++    int need_exit;
++    UNSERIALIZE_SCALAR(need_exit);
++    needExit = static_cast<ReqType>(need_exit);
++}
++
++void
++MultiIface::SyncSwitch::serialize(CheckpointOut &cp) const
++{
++    SERIALIZE_SCALAR(numExitReq);
++}
++
++void
++MultiIface::SyncSwitch::unserialize(CheckpointIn &cp)
++{
++    UNSERIALIZE_SCALAR(numExitReq);
+ }
+ 
+ void
+@@ -280,11 +284,13 @@
+ {
+     // Note that this may be called either from startup() or drainResume()
+ 
+-    // Store our initial start and repeat value
+-    Tick start = MultiIface::sync->nextAt;
++    // At this point, all MultiIface objects ha already called Sync::init() so
++    // we have a local minimum of the start tick and repeat for the periodic
++    // sync.
++    Tick firstAt  = MultiIface::sync->firstAt;
+     repeat = MultiIface::sync->nextRepeat;
+-    // Do a global barrier to figure out the common start tick and repeat
+-    // for periodic sync
++    // Do a global barrier to agree on a common repeat value (the smallest
++    // one from all participating nodes
+     MultiIface::sync->run(curTick() == 0);
+ 
+     assert(!MultiIface::sync->doCkpt);
+@@ -293,11 +299,11 @@
+     assert(MultiIface::sync->nextRepeat <= repeat);
+ 
+     // if this is called at tick 0 then we use the config start param otherwise
+-    // the maximum of the current tick of all gem5 peers
++    // the maximum of the current tick of all participating nodes
+     if (curTick() == 0) {
+         assert(!scheduled());
+         assert(MultiIface::sync->nextAt == 0);
+-        schedule(start);
++        schedule(firstAt);
+     } else {
+         if (scheduled())
+             reschedule(MultiIface::sync->nextAt);
+@@ -354,27 +360,20 @@
+ Tick
+ MultiIface::RecvScheduler::calcReceiveTick(Tick send_tick,
+                                            Tick send_delay,
+-                                           Tick prev_recv_tick,
+-                                           unsigned source_rank)
++                                           Tick prev_recv_tick)
+ {
+     Tick recv_tick = send_tick + send_delay + linkDelay;
+-    // Adjust the receive tick if we do not have a big enough receive window.
+-    // This gives us a very raw simulation of (receive) link contention.
+-    if (prev_recv_tick + send_delay > recv_tick) {
+-        DPRINTF(MultiEthernetPkt, "MultiIface::caclReceiveTick() "
+-                "recv_tick %lu adjusted to %lu (prev_recv_tick: %lu "
+-                "send_delay: %lu)\n",
+-                recv_tick, prev_recv_tick + send_delay, prev_recv_tick,
+-                send_delay);
+-        recv_tick = prev_recv_tick + send_delay;
+-    }
+-    if (recv_tick <= curTick()) {
+-        panic("Simulators out of sync - missed packet receive by %llu ticks"
+-              "(rev_recv_tick: %lu send_tick: %lu send_delay: %lu "
+-              "linkDelay: %lu source_rank: %d)",
+-              curTick() - recv_tick, prev_recv_tick, send_tick, send_delay,
+-              linkDelay, source_rank);
+-    }
++    // sanity check (we need atleast a send delay long window)
++    assert(recv_tick >= prev_recv_tick + send_delay);
++    panic_if(prev_recv_tick + send_delay > recv_tick,
++             "Receive window is smaller than send delay");
++    panic_if(recv_tick <= curTick(),
++             "Simulators out of sync - missed packet receive by %llu ticks"
++             "(rev_recv_tick: %lu send_tick: %lu send_delay: %lu "
++             "linkDelay: %lu )",
++             curTick() - recv_tick, prev_recv_tick, send_tick, send_delay,
++             linkDelay);
++
+     return recv_tick;
+ }
+ 
+@@ -386,7 +385,7 @@
+     // This may be done during unserialize except that curTick() is unknown.
+     std::vector<Desc> v;
+     while (!descQueue.empty()) {
+-        Desc d = descQueue.top();
++        Desc d = descQueue.front();
+         descQueue.pop();
+         d.sendTick = curTick();
+         d.sendDelay = d.packet->size(); // assume 1 tick/byte max link speed
+@@ -407,13 +406,11 @@
+ void
+ MultiIface::RecvScheduler::pushPacket(EthPacketPtr new_packet,
+                                       Tick send_tick,
+-                                      Tick send_delay,
+-                                      unsigned source_rank)
++                                      Tick send_delay)
+ {
+     // Note : this is called from the receiver thread
+     curEventQueue()->lock();
+-    Tick recv_tick = calcReceiveTick(send_tick, send_delay, prevRecvTick,
+-        source_rank);
++    Tick recv_tick = calcReceiveTick(send_tick, send_delay, prevRecvTick);
+ 
+     DPRINTF(MultiEthernetPkt, "MultiIface::recvScheduler::pushPacket "
+             "send_tick:%llu send_delay:%llu link_delay:%llu recv_tick:%llu\n",
+@@ -431,14 +428,15 @@
+     // NOTE:  we use the event queue lock to protect the receive desc queue,
+     // too, which is accessed both by the receiver thread and the simulation
+     // thread.
+-    descQueue.emplace(new_packet, send_tick, send_delay, source_rank);
+-    if (descQueue.size() > 1) {
+-        assert(recvDone->scheduled());
+-        if (descQueue.top().packet == new_packet)
+-            eventManager->reschedule(recvDone, recv_tick);
+-    } else {
++    descQueue.emplace(new_packet, send_tick, send_delay);
++    if (descQueue.size() == 1) {
+         assert(!recvDone->scheduled());
+         eventManager->schedule(recvDone, recv_tick);
++    } else {
++        assert(recvDone->scheduled());
++        panic_if(descQueue.front().sendTick + descQueue.front().sendDelay > recv_tick,
++                 "Out of order packet received (recv_tick: %lu top(): %lu\n",
++                 recv_tick, descQueue.front().sendTick + descQueue.front().sendDelay);
+     }
+     curEventQueue()->unlock();
+ }
+@@ -449,14 +447,13 @@
+     // Note : this is called from the simulation thread when a receive done
+     // event is being processed for the link. We assume that the thread holds
+     // the event queue queue lock when this is called!
+-    EthPacketPtr next_packet = descQueue.top().packet;
++    EthPacketPtr next_packet = descQueue.front().packet;
+     descQueue.pop();
+ 
+     if (descQueue.size() > 0) {
+-        Tick recv_tick = calcReceiveTick(descQueue.top().sendTick,
+-                                         descQueue.top().sendDelay,
+-                                         curTick(),
+-                                         descQueue.top().sourceRank);
++        Tick recv_tick = calcReceiveTick(descQueue.front().sendTick,
++                                         descQueue.front().sendDelay,
++                                         curTick());
+         eventManager->schedule(recvDone, recv_tick);
+     }
+     prevRecvTick = curTick();
+@@ -468,7 +465,6 @@
+ {
+         SERIALIZE_SCALAR(sendTick);
+         SERIALIZE_SCALAR(sendDelay);
+-        SERIALIZE_SCALAR(sourceRank);
+         packet->serialize("rxPacket", cp);
+ }
+ 
+@@ -477,7 +473,6 @@
+ {
+         UNSERIALIZE_SCALAR(sendTick);
+         UNSERIALIZE_SCALAR(sendDelay);
+-        UNSERIALIZE_SCALAR(sourceRank);
+         packet = std::make_shared<EthPacketData>(16384);
+         packet->unserialize("rxPacket", cp);
+ }
+@@ -487,11 +482,15 @@
+ {
+     SERIALIZE_SCALAR(prevRecvTick);
+     // serialize the receive desc queue
++    std::queue<Desc> tmp_queue(descQueue);
+     unsigned n_desc_queue = descQueue.size();
++    assert(tmp_queue.size() == descQueue.size());
+     SERIALIZE_SCALAR(n_desc_queue);
+     for (int i = 0; i < n_desc_queue; i++) {
+-        descQueue.impl().at(i).serializeSection(cp, csprintf("rxDesc_%d", i));
++        tmp_queue.front().serializeSection(cp, csprintf("rxDesc_%d", i));
++        tmp_queue.pop();
+     }
++    assert(tmp_queue.empty());
+ }
+ 
+ void
+@@ -522,7 +521,6 @@
+     rank(multi_rank), size(multi_size)
+ {
+     DPRINTF(MultiEthernet, "MultiIface() ctor rank:%d\n",multi_rank);
+-    MultiHeaderPkt::clearAddress(networkAddress);
+     isMaster = false;
+     if (master == nullptr) {
+         assert(sync == nullptr);
+@@ -554,74 +552,23 @@
+ MultiIface::packetOut(EthPacketPtr pkt, Tick send_delay)
+ {
+     Header header;
+-    unsigned address_length = MultiHeaderPkt::maxAddressLength();
+ 
+     // Prepare a multi header packet for the Ethernet packet we want to
+     // send out.
+     header.msgType = MsgType::dataDescriptor;
+     header.sendTick  = curTick();
+     header.sendDelay = send_delay;
+-    header.senderRank = rank;
+-
+-    // Store also the source and destination addresses.
+-    pkt->packAddress(header.srcAddress, header.dstAddress,
+-                     address_length);
+ 
+     header.dataPacketLength = pkt->size();
+ 
+-    // update our network address
+-    if (!MultiHeaderPkt::isAddressEqual(header.srcAddress, networkAddress))
+-        MultiHeaderPkt::copyAddress(networkAddress, header.srcAddress);
+-
+     // Send out the packet and the meta info.
+     sendPacket(header, pkt);
+ 
+     DPRINTF(MultiEthernetPkt,
+-            "MultiIface::sendDataPacket() done size:%d send_delay:%llu "
+-            "src:0x%02x%02x%02x%02x%02x%02x "
+-            "dst:0x%02x%02x%02x%02x%02x%02x\n",
+-            pkt->size(), send_delay,
+-            header.srcAddress[0], header.srcAddress[1],
+-            header.srcAddress[2], header.srcAddress[3],
+-            header.srcAddress[4], header.srcAddress[5],
+-            header.dstAddress[0], header.dstAddress[1],
+-            header.dstAddress[2], header.dstAddress[3],
+-            header.dstAddress[4], header.dstAddress[5]);
++            "MultiIface::sendDataPacket() done size:%d send_delay:%llu\n",
++            pkt->size(), send_delay);
+ }
+ 
+-/*
+-bool
+-MultiIface::recvHeader(MultiHeaderPkt::Header &header_pkt)
+-{
+-    // Blocking receive of an incoming multi header packet.
+-    return recvRaw((void *)&header_pkt, sizeof(header_pkt));
+-}
+-
+-void
+-MultiIface::recvData(const MultiHeaderPkt::Header &header_pkt)
+-{
+-    // We are here beacuse a header packet has been received implying
+-    // that an Ethernet (data) packet is coming in next.
+-    assert(header_pkt.msgType == MsgType::dataDescriptor);
+-    // Allocate storage for the incoming Ethernet packet.
+-    //EthPacketPtr new_packet(new EthPacketData(header_pkt.dataPacketLength));
+-    EthPacketPtr new_packet  = std::make_shared<EthPacketData>(header_pkt.dataPacketLength);
+-    // Now execute the blocking receive and store the incoming data directly
+-    // in the new EthPacketData object.
+-    if (! recvRaw((void *)(new_packet->data), header_pkt.dataPacketLength))
+-        panic("Missing data packet");
+-
+-    new_packet->length = header_pkt.dataPacketLength;
+-
+-    // Schedule a new receive event for the data packet.
+-    recvScheduler.pushPacket(new_packet,
+-                             header_pkt.sendTick,
+-                             header_pkt.sendDelay,
+-                             header_pkt.senderRank);
+-
+-}
+-*/
+-
+ void
+ MultiIface::recvThreadFunc(Event *recv_done, Tick link_delay)
+ {
+@@ -650,15 +597,13 @@
+             recvPacket(header, new_packet);
+             recvScheduler.pushPacket(new_packet,
+                                      header.sendTick,
+-                                     header.sendDelay,
+-                                     header.senderRank);
++                                     header.sendDelay);
+         } else {
+-            //assert(header.msgType == MsgType::cmdSyncAck);
+             // everything else must be synchronisation related command
+-            sync->progress(header.maxSyncReqTick,
++            sync->progress(header.sendTick,
+                            header.syncRepeat,
+-                           header.doCkpt,
+-                           header.doExit);
++                           header.needCkpt,
++                           header.needExit);
+         }
+     }
+ }
+@@ -668,7 +613,6 @@
+ {
+     assert(recvThread == nullptr);
+ 
+-    establishConnection();
+     recvThread = new std::thread(&MultiIface::recvThreadFunc,
+                                  this,
+                                  recv_done,
+@@ -682,10 +626,6 @@
+     DPRINTF(MultiEthernet,"MultiIFace::drain() called\n");
+ 
+     // This can be called multiple times in the same drain cycle.
+-    if (master == this) {
+-        sync->drainStart();
+-    }
+-
+     return DrainState::Drained;
+ }
+ 
+@@ -705,7 +645,6 @@
+     // called exactly once after the system is fully drained.
+     sync->drainComplete();
+ 
+-    SERIALIZE_ARRAY(networkAddress, sizeof(networkAddress));
+     recvScheduler.serializeSection(cp, "recvScheduler");
+     if (this == master) {
+         sync->serializeSection(cp, "Sync");
+@@ -715,7 +654,6 @@
+ void
+ MultiIface::unserialize(CheckpointIn &cp)
+ {
+-    UNSERIALIZE_ARRAY(networkAddress, sizeof(networkAddress));
+     recvScheduler.unserializeSection(cp, "recvScheduler");
+     if (this == master) {
+         sync->unserializeSection(cp, "Sync");
+@@ -742,11 +680,6 @@
+ MultiIface::startup()
+ {
+     DPRINTF(MultiEthernet, "MultiIface::startup() started\n");
+-    // Now that everything is up-to-date give the underlying messaging system
+-    // a chance to access any information (e.g. networkAddress restored from
+-    // a checkpoint)
+-    //initTransport();
+-
+     // If this run is a resume from a checkpoint than we schedule the first
+     // periodic sync in drainResume()
+     if (curTick() == 0 && this == master)
+@@ -762,11 +695,19 @@
+     DPRINTF(MultiEthernet, "MultiIface::readyToCkpt() called, delay:%lu "
+             "period:%lu\n", delay, period);
+     if (master) {
+-        sync->requestCkpt();
++        if (delay == 0) {
++            inform("m5 checkpoint called with zero delay => triggering collaborative "
++                   "checkpoint\n");
++            sync->requestCkpt(ReqType::collective);
++        } else {
++            inform("m5 checkpoint called with non-zero delay => triggering immediate "
++                   "checkpoint (at the next sync)\n");
++            sync->requestCkpt(ReqType::immediate);
++        }
++        if (period != 0)
++            inform("Non-zero period for m5_ckpt is ignored in "
++                   "distributed gem5 runs\n");
+         ret = false;
+-        if (delay != 0 || period != 0)
+-            inform("Non zero delay or period for m5_ckpt is ignored in "
+-                   "multi-gem5 mode\n");
+     }
+     return ret;
+ }
+@@ -778,10 +719,16 @@
+     DPRINTF(MultiEthernet, "MultiIface::readyToExit() called, delay:%lu\n",
+             delay);
+     if (master) {
+-        sync->requestExit();
++        if (delay == 0) {
++            inform("m5 exit called with zero delay => triggering collaborative "
++                   "exit\n");
++            sync->requestExit(ReqType::collective);
++        } else {
++            inform("m5 exit called with non-zero delay => triggering immediate "
++                   "exit (at the next sync)\n");
++            sync->requestExit(ReqType::immediate);
++        }
+         ret = false;
+-        if (delay != 0)
+-            inform("Non zero delay for m5_exit is ignored in multi-gem5 mode\n");
+     }
+     return ret;
+ }
+diff --git a/src/dev/multi_iface.hh b/src/dev/multi_iface.hh
+--- a/src/dev/multi_iface.hh
++++ b/src/dev/multi_iface.hh
+@@ -103,6 +103,7 @@
+ 
+   protected:
+     typedef MultiHeaderPkt::MsgType MsgType;
++    typedef MultiHeaderPkt::ReqType ReqType;
+ 
+   private:
+     class SyncEvent;
+@@ -131,14 +132,6 @@
+          */
+         unsigned waitNum;
+         /**
+-         * Flag is set if m5_exit pseudo instruction encountered
+-         */
+-        bool needExit;
+-        /**
+-         * Flag is set if m5_ckpt pseudo instruction encountered
+-         */
+-        bool needCkpt;
+-        /**
+          * Flag is set if exit is permitted upon sync completion
+          */
+         bool doExit;
+@@ -147,17 +140,17 @@
+          */
+         bool doCkpt;
+         /**
+-         * Flag is set if the sync before taking a ckpt is done.
++         * The repeat value for the next periodic sync
+          */
+-        bool isCkptSyncDone;
++        Tick nextRepeat;
++        /**
++         * Tick for the very first periodic sync
++         */
++        Tick firstAt;
+         /**
+          * Tick for the next periodic sync (if the event is not scheduled yet)
+          */
+         Tick nextAt;
+-        /**
+-         * The repeat value for the next periodic sync
+-         */
+-        Tick nextRepeat;
+ 
+         friend class SyncEvent;
+ 
+@@ -169,7 +162,7 @@
+          * @param repeat Frequency of multi synchronisation
+          *
+          */
+-        void init(Tick  start, Tick repeat);
++        void init(Tick start, Tick repeat);
+         /**
+          *  Core method to perform a full multi sync.
+          */
+@@ -177,58 +170,84 @@
+         /**
+          * Callback when the receiver thread gets a sync ack message.
+          */
+-        virtual void progress(Tick max_req_tick,
+-                      Tick next_repeat,
+-                      bool do_ckpt,
+-                      bool do_exit) = 0;
++        virtual void progress(Tick send_tick,
++                              Tick next_repeat,
++                              ReqType do_ckpt,
++                              ReqType do_exit) = 0;
+ 
+-        void requestCkpt();
+-        void requestExit();
++        virtual void requestCkpt(ReqType req) = 0;
++        virtual void requestExit(ReqType req) = 0;
+ 
+-        void drainStart() { isCkptSyncDone = false; }
+         void drainComplete();
+ 
+-        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
+-        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+-
++        virtual void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE = 0;
++        virtual void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE = 0;
+     };
+ 
+     class SyncNode: public Sync
+     {
+-        //friend Sync;
+-        public:
+-/*        SyncNode() : waitNum(0), needExit(false), needCkpt(false),
+-                 doExit(false), doCkpt(false),
+-                 nextAt(std::numeric_limits<Tick>::max()),
+-                 nextRepeat(std::numeric_limits<Tick>::max()) {}
+-        ~SyncNode() {}
+-*/
++      private:
++        /**
++         * Exit requested
++         */
++        ReqType needExit;
++        /**
++         * Ckpt requested
++         */
++        ReqType needCkpt;
++
++      public:
++
+         SyncNode();
+         ~SyncNode() {}
+-        void run(bool same_tick);
++        void run(bool same_tick) M5_ATTR_OVERRIDE;
+         void progress(Tick max_req_tick,
+-                           Tick next_repeat,
+-                           bool do_ckpt,
+-                           bool do_exit);
++                      Tick next_repeat,
++                      ReqType do_ckpt,
++                      ReqType do_exit) M5_ATTR_OVERRIDE;
++
++        void requestCkpt(ReqType req) M5_ATTR_OVERRIDE;
++        void requestExit(ReqType req) M5_ATTR_OVERRIDE;
++
++        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
++        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+     };
+ 
+     class SyncSwitch: public Sync
+     {
+-        public:
++      private:
++        /**
++         * Counter for recording exit requests
++         */
++        unsigned numExitReq;
++        /**
++         * Counter for recording ckpt requests
++         */
++        unsigned numCkptReq;
++        /**
++         *  Number of connected simulated nodes
++         */
++        unsigned numNodes;
++
++      public:
+         SyncSwitch(int num_nodes);
+         ~SyncSwitch() {}
+-/*        SyncSwitch() : waitNum(0), needExit(false), needCkpt(false),
+-                 doExit(false), doCkpt(false),
+-                 nextAt(std::numeric_limits<Tick>::max()),
+-                 nextRepeat(std::numeric_limits<Tick>::max()) {}
+-        ~SyncSwitch() {}
+-*/
+-        void run(bool same_tick);
++
++        void run(bool same_tick) M5_ATTR_OVERRIDE;
+         void progress(Tick max_req_tick,
+-                           Tick next_repeat,
+-                           bool do_ckpt,
+-                           bool do_exit);
++                      Tick next_repeat,
++                      ReqType do_ckpt,
++                      ReqType do_exit) M5_ATTR_OVERRIDE;
+ 
++        void requestCkpt(ReqType) M5_ATTR_OVERRIDE {
++            panic("Switch requested checkpoint");
++        }
++        void requestExit(ReqType) M5_ATTR_OVERRIDE {
++            panic("Switch requested exit");
++        }
++
++        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
++        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+     };
+ 
+     /**
+@@ -282,59 +301,20 @@
+             EthPacketPtr packet;
+             Tick sendTick;
+             Tick sendDelay;
+-            int sourceRank;
+ 
+-            Desc() : sendTick(0), sendDelay(0), sourceRank(-1) {}
+-            Desc(EthPacketPtr p, Tick s, Tick d, int r) :
+-                packet(p), sendTick(s), sendDelay(d), sourceRank(r) {}
++            Desc() : sendTick(0), sendDelay(0) {}
++            Desc(EthPacketPtr p, Tick s, Tick d) :
++                packet(p), sendTick(s), sendDelay(d) {}
+             Desc(const Desc &d) :
+-                packet(d.packet), sendTick(d.sendTick), sendDelay(d.sendDelay),
+-                sourceRank(d.sourceRank) {}
++                packet(d.packet), sendTick(d.sendTick), sendDelay(d.sendDelay) {}
+ 
+             void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
+             void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+         };
+         /**
+-         * Comparison predicate for receive descriptors.
+-         *
+-         * @note Receive descriptors are stored in the ordered receive queue.
+-         * The primary key for ordering is the send_tick+send_delay, the
+-         * secondary is the rank of the sender. We use the secondary key to
+-         * ensure reproducibility across multi-node gem5 runs (i.e. the ordering
+-         * of the incoming packets are always well defined in the receive
+-         * queue).
+-         * It would be simpler to store the calculated receive tick in the
+-         * descriptors and use that as primary key but unfortunately the
+-         * receive tick may change as new packets are coming in out of order
+-         * (and we have to maintain a big enough receive window, see
+-         * calcReceiveTick() method).
++         * The queue to store the receive descriptors.
+          */
+-        struct DescCompare {
+-            bool operator()(const Desc &lhs, const Desc &rhs)
+-            {
+-                Tick lhs_key = lhs.sendTick + lhs.sendDelay;
+-                Tick rhs_key = rhs.sendTick + rhs.sendDelay;
+-                return ((lhs_key > rhs_key) ||
+-                        (lhs_key == rhs_key && lhs.sourceRank > rhs.sourceRank));
+-            }
+-        };
+-        /**
+-         * Customized priority queue used to store incoming data packets
+-         * descriptors by the receiver thread. We need to expose the underlying
+-         * container to enable iterator access for serializing.
+-         */
+-        class DescQueue : public std::priority_queue<Desc,
+-                                                     std::vector<Desc>,
+-                                                     DescCompare>
+-        {
+-          public:
+-            std::vector<Desc> &impl() { return c; }
+-            const std::vector<Desc> &impl() const { return c; }
+-        };
+-        /**
+-         * The priority queue to store the receive descriptors.
+-         */
+-        DescQueue descQueue;
++        std::queue<Desc> descQueue;
+         /**
+          * The tick when the most recent receive event was processed.
+          *
+@@ -378,8 +358,8 @@
+          */
+         Tick calcReceiveTick(Tick send_tick,
+                              Tick send_delay,
+-                             Tick prev_recv_tick,
+-                             unsigned source_rank);
++                             Tick prev_recv_tick);
++
+ 
+       public:
+         /**
+@@ -412,8 +392,7 @@
+          */
+         void pushPacket(EthPacketPtr new_packet,
+                         Tick send_tick,
+-                        Tick send_delay,
+-                        unsigned source_rank);
++                        Tick send_delay);
+ 
+         void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
+         void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+@@ -450,15 +429,10 @@
+      * The rank of this process among the gem5 peers.
+      */
+     unsigned rank;
+-
+     /**
+      * The number of gem5 processes comprising this multi simulation.
+      */
+     unsigned size;
+-    /**
+-     * The network address of the associated link.
+-     */
+-    MultiHeaderPkt::AddressType networkAddress;
+ 
+     bool isMaster;
+ 
+@@ -511,20 +485,6 @@
+      */
+     virtual void recvPacket(const Header &header, EthPacketPtr &packet) = 0;
+     /**
+-     * Initialize hook for the underlying messaging system.
+-
+-     * @note This method must be called during startup(). It gives the
+-     * underlying messaging system a chance to access up-to-date information
+-     * from the base class before the simulation starts (e.g. networkAddress
+-     * restored from a checkpoint).
+-     */
+-    virtual void initTransport() = 0;
+-
+-    /**
+-    */
+-    virtual void establishConnection() = 0;
+-
+-    /**
+      * The function executed by a receiver thread.
+      */
+     void recvThreadFunc(Event *recv_done, Tick link_delay);
+diff --git a/src/dev/multi_packet.cc b/src/dev/multi_packet.cc
+deleted file mode 100644
+--- a/src/dev/multi_packet.cc
++++ /dev/null
+@@ -1,100 +0,0 @@
+-/*
+- * Copyright (c) 2015 ARM Limited
+- * All rights reserved
+- *
+- * The license below extends only to copyright in the software and shall
+- * not be construed as granting a license to any other intellectual
+- * property including but not limited to intellectual property relating
+- * to a hardware implementation of the functionality of the software
+- * licensed hereunder.  You may use the software subject to the license
+- * terms below provided that you ensure that this notice is replicated
+- * unmodified and in its entirety in all distributions of the software,
+- * modified or unmodified, in source code or in binary form.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are
+- * met: redistributions of source code must retain the above copyright
+- * notice, this list of conditions and the following disclaimer;
+- * redistributions in binary form must reproduce the above copyright
+- * notice, this list of conditions and the following disclaimer in the
+- * documentation and/or other materials provided with the distribution;
+- * neither the name of the copyright holders nor the names of its
+- * contributors may be used to endorse or promote products derived from
+- * this software without specific prior written permission.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- *
+- * Authors: Gabor Dozsa
+- */
+-
+-/* @file
+- * MultiHeaderPkt class to encapsulate multi-gem5 header packets
+- *
+- */
+-
+-#include "dev/multi_packet.hh"
+-
+-#include <cstdint>
+-#include <cstring>
+-
+-#include "base/inet.hh"
+-
+-unsigned
+-MultiHeaderPkt::maxAddressLength()
+-{
+-    return sizeof(AddressType);
+-}
+-
+-void
+-MultiHeaderPkt::clearAddress(AddressType &addr)
+-{
+-    std::memset(addr, 0, sizeof(addr));
+-}
+-
+-bool
+-MultiHeaderPkt::isAddressEqual(const AddressType &addr1,
+-                               const AddressType &addr2)
+-{
+-    return (std::memcmp(addr1, addr2, sizeof(addr1)) == 0);
+-}
+-
+-bool
+-MultiHeaderPkt::isAddressLess(const AddressType &addr1,
+-                              const AddressType &addr2)
+-{
+-    return (std::memcmp(addr1, addr2, sizeof(addr1)) < 0);
+-}
+-
+-void
+-MultiHeaderPkt::copyAddress(AddressType &dest, const AddressType &src)
+-{
+-    std::memcpy(dest, src, sizeof(dest));
+-}
+-
+-bool
+-MultiHeaderPkt::isBroadcastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->broadcast();
+-}
+-
+-bool
+-MultiHeaderPkt::isMulticastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->multicast();
+-}
+-
+-bool
+-MultiHeaderPkt::isUnicastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->unicast();
+-}
+diff --git a/src/dev/multi_packet.hh b/src/dev/multi_packet.hh
+--- a/src/dev/multi_packet.hh
++++ b/src/dev/multi_packet.hh
+@@ -64,12 +64,7 @@
+     ~MultiHeaderPkt() {}
+ 
+   public:
+-    /**
+-     * Simply type to help with calculating space requirements for
+-     * the corresponding header field.
+-     */
+-    typedef uint8_t AddressType[6];
+-
++    enum class ReqType { immediate, collective, pending, none };
+     /**
+      *  The msg type defines what informarion a multi header packet carries.
+      */
+@@ -78,8 +73,6 @@
+         dataDescriptor,
+         cmdSyncReq,
+         cmdSyncAck,
+-        cmdCkptReq,
+-        cmdExitReq,
+         unknown
+     };
+ 
+@@ -92,53 +85,22 @@
+          * by sync ack messages to trigger collective ckpt or exit events.
+          */
+         MsgType msgType;
+-        union {
+-            Tick sendTick;
+-            Tick maxSyncReqTick;
+-        };
++        Tick sendTick;
+         union {
+             Tick sendDelay;
+             Tick syncRepeat;
+         };
+         union {
+-            unsigned senderRank;
+-            bool sameTick;
+-            bool doCkpt;
+-        };
+-        union {
+             /**
+              * Actual length of the simulated Ethernet packet.
+              */
+             unsigned dataPacketLength;
+-            bool doExit;
++            struct {
++                ReqType needCkpt;
++                ReqType needExit;
++            };
+         };
+-        /**
+-         * Source MAC address.
+-         */
+-        AddressType srcAddress;
+-        /**
+-         * Destination MAC address.
+-         */
+-        AddressType dstAddress;
+     };
+-
+-    static unsigned maxAddressLength();
+-
+-    /**
+-     * Static functions for manipulating and comparing MAC addresses.
+-     */
+-    static void clearAddress(AddressType &addr);
+-    static bool isAddressEqual(const AddressType &addr1,
+-                               const AddressType &addr2);
+-    static bool isAddressLess(const AddressType &addr1,
+-                              const AddressType &addr2);
+-
+-    static void copyAddress(AddressType &dest,
+-                            const AddressType &src);
+-
+-    static bool isUnicastAddress(const AddressType &addr);
+-    static bool isMulticastAddress(const AddressType &addr);
+-    static bool isBroadcastAddress(const AddressType &addr);
+ };
+ 
+ #endif
+diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
+--- a/src/dev/tcp_iface.cc
++++ b/src/dev/tcp_iface.cc
+@@ -55,6 +55,7 @@
+ 
+ #include "base/types.hh"
+ #include "debug/MultiEthernet.hh"
++#include "debug/MultiEthernetCmd.hh"
+ #include "sim/sim_exit.hh"
+ 
+ // MSG_NOSIGNAL does not exists on OS X
+@@ -78,7 +79,9 @@
+                is_switch, num_nodes),
+     port(server_port), ip(server_ip), isSwitch(is_switch), listening(false)
+ {
++    establishConnection();
+ }
++
+ bool
+ TCPIface::listen(int port) {
+     if (listening)
+@@ -184,17 +187,6 @@
+ }
+ 
+ void
+-TCPIface::initTransport()
+-{
+-    // let the server know who we are
+-    sendTCP(sock, &rank, sizeof(rank));
+-    // Let the server know our network address.  This is necessary for
+-    // deterministic execution after restoring from a checkpoint - that's why
+-    // we do not send this info right in the ctor.
+-    sendTCP(sock, &networkAddress, sizeof(networkAddress));
+-}
+-
+-void
+ TCPIface::sendTCP(int sock, const void *buf, unsigned length)
+ {
+     ssize_t ret;
+@@ -241,6 +233,8 @@
+ void
+ TCPIface::sendCmd(const Header &header)
+ {
++    DPRINTF(MultiEthernetCmd, "TCPIface::sendCmd() type: %d\n",
++            static_cast<int>(header.msgType));
+     // Global commands (i.e. sync request) are always sent by the master
+     // MultiIface. The transfer method is simply implemented as point-to-point
+     // messages for now
+@@ -251,7 +245,10 @@
+ bool
+ TCPIface::recvHeader(Header &header)
+ {
+-    return recvTCP(sock, &header, sizeof(header));
++    bool ret = recvTCP(sock, &header, sizeof(header));
++    DPRINTF(MultiEthernetCmd, "TCPIface::recvHeader() type: %d ret: %d\n",
++            static_cast<int>(header.msgType), ret);
++    return ret;
+ }
+ 
+ void
+diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
+--- a/src/dev/tcp_iface.hh
++++ b/src/dev/tcp_iface.hh
+@@ -119,8 +119,6 @@
+ 
+     void recvPacket(const Header &header, EthPacketPtr &packet) M5_ATTR_OVERRIDE;
+ 
+-    void initTransport() M5_ATTR_OVERRIDE;
+-
+   public:
+     /**
+      * The ctor creates and connects the stream socket to the server.
+diff --git a/util/multi/gem5-multi.sh b/util/multi/gem5-multi.sh
+--- a/util/multi/gem5-multi.sh
++++ b/util/multi/gem5-multi.sh
+@@ -61,18 +61,18 @@
+ # Each gem5 process will create an m5out.$GEM5_RANK directory for
+ # the usual output files. Furthermore, there will be a separate log file
+ # for each ssh session (we use ssh to start gem5 processes) and one for
+-# the server. These are called log.$GEM5_RANK and log.server.
++# the server. These are called log.$GEM5_RANK and log.switch.
+ #
+ 
+ 
+ # print help
+ usage_func ()
+ {
+-    echo "Usage:$0 [-debug] [-n nnodes] [-s server] [-p port] gem5_exe gem5_args"
++    echo "Usage:$0 [-debug] [-n nnodes] [-s switch] [-p port] gem5_exe gem5_args"
+     echo "     -debug   : debug mode (start gem5 in gdb)"
+     echo "     nnodes   : number of gem5 processes"
+-    echo "     server   : message server executable"
+-    echo "     port     : message server listen port"
++    echo "     switch   : switch config file"
++    echo "     port     : switch listen port"
+     echo "     gem5_exe : gem5 executable (full path required)"
+     echo "     gem5_args: usual gem5 arguments ( m5 options, config script options)"
+     echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
+@@ -88,12 +88,12 @@
+             NNODES=$2
+             shift 2
+             ;;
+-        x-s|x-server)
+-            TCP_SERVER=$2
++        x-s|x-switch)
++            SWITCH_CONFIG=$2
+             shift 2
+             ;;
+         x-p|x-port)
+-            SERVER_PORT=$2
++            SWITCH_PORT=$2
+             shift 2
+             ;;
+         x-debug)
+@@ -112,17 +112,43 @@
+ shift
+ GEM5_ARGS="$*"
+ 
++# Extract gem5 debug and checkpoint restore flags for the switch process
++while (($# > 0))
++do
++    case "x$1" in
++	x--debug-flags=*)
++	    GEM5_DEBUG_FLAGS=$1
++	    shift
++	    ;;
++	x-r)
++	    GEM5_CKPT_RESTORE="-r$2"
++	    shift 2
++	    ;;
++	x-r*)
++	    GEM5_CKPT_RESTORE=$1
++	    shift
++	    ;;
++	x--checkpoint-restore)
++	    GEM5_CKPT_RESTORE="$1 $2"
++	    shift 2
++	    ;;
++	*)
++	    shift
++	    ;;
++    esac
++done
++
+ # Default values to use (in case they are not defined as command line options)
+-DEFAULT_TCP_SERVER=$(dirname $0)/../../util/multi/tcp_server
+-DEFAULT_SERVER_PORT=2200
++DEFAULT_SWITCH_CONFIG=$(cd $(dirname $0); pwd)/../../configs/example/sw.py
++DEFAULT_SWITCH_PORT=2200
+ 
+-[ -z "$TCP_SERVER" ]  && TCP_SERVER=$DEFAULT_TCP_SERVER
+-[ -z "$SERVER_PORT" ] && SERVER_PORT=$DEFAULT_SERVER_PORT
++[ -z "$SWITCH_CONFIG" ]  && SWITCH_CONFIG=$DEFAULT_SWITCH_CONFIG
++[ -z "$SWITCH_PORT" ] && SWITCH_PORT=$DEFAULT_SWITCH_PORT
+ [ -z "$NNODES" ]      && NNODES=2
+ 
+ 
+ #  Check if all the executables we need exist
+-[ -x "$TCP_SERVER" ] || { echo "Executable ${TCP_SERVER} not found"; exit 1; }
++[ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
+ [ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
+ 
+ 
+@@ -164,7 +190,7 @@
+     echo "KILLED $(date)"
+     # Try to Kill the server first. That should trigger an exit for all connectedd
+     # gem5 processes.
+-    [ "x$SERVER_PID" != "x" ] && kill $SERVER_PID 2>/dev/null
++    [ "x$SWITCH_PID" != "x" ] && kill $SWITCH_PID 2>/dev/null
+     sleep 20
+     # (try to) kill gem5 processes - just in case something went wrong with the
+     # server triggered exit
+@@ -192,7 +218,7 @@
+         do
+             kill -0 $p 2>/dev/null || ((NDEAD+=1))
+         done
+-        kill -0 $SERVER_PID || ((NDEAD+=1))
++        kill -0 $SWITCH_PID || ((NDEAD+=1))
+         if ((NDEAD>0))
+         then
+             # we may be in the middle of an orderly termination,
+@@ -229,21 +255,19 @@
+ # env args to be passed explicitly to gem5 processes started via ssh
+ ENV_ARGS="LD_LIBRARY_PATH=$LD_LIBRARY_PATH M5_PATH=$M5_PATH"
+ 
+-# launch the mesage server and check if it has started okay
+-#$TCP_SERVER $GEM5_DEBUG $NNODES $SERVER_PORT &>log.server &
+ # launch switch gem5
+ echo "launch switch gem5 process ..."
+-$GEM5_EXE -d $(pwd)/m5out.switch $M5_PATH/configs/example/sw.py --is-switch --num-nodes=$NNODES --multi-server-port=$SERVER_PORT &>log.server &
+-SERVER_PID=$!
++$GEM5_EXE -d $(pwd)/m5out.switch $GEM5_DEBUG_FLAGS $SWITCH_CONFIG $GEM5_CKPT_RESTORE --is-switch --num-nodes=$NNODES --multi-server-port=$SWITCH_PORT &>log.switch &
++
++SWITCH_PID=$!
+ sleep 10
+-LINE=$(grep -r "tcp_iface listening on port" log.server)
++kill -0 $SWITCH_PID || { echo "Failed to start switch"; exit -1; }
++LINE=$(grep -r "tcp_iface listening on port" log.switch)
+ 
+ IFS=' ' read -ra ADDR <<< "$LINE"
+ # acutal port that switch is listening on may be different 
+ # from what we specified if the port was busy
+-SERVER_PORT=${ADDR[5]}
+-
+-#kill -0 $SERVER_PID || { echo "Failed to start message server"; exit -1; }
++SWITCH_PORT=${ADDR[5]}
+ 
+ # Now launch all the gem5 processes with ssh.
+ echo "START $(date)"
+@@ -259,14 +283,14 @@
+ 	    --multi-rank=$n                                                      \
+ 	    --multi-size=$NNODES                                                 \
+         --multi-server-name=${HOSTS[0]}                                      \
+-        --multi-server-port=$SERVER_PORT
++        --multi-server-port=$SWITCH_PORT
+ 	    SSH_PIDS[$n]=$!
+ 	    ((n+=1))
+     done
+ done
+ 
+ # Wait here if it is a debug session
+-[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SERVER_PID; exit -1; }
++[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SWITCH_PID; exit -1; }
+ 
+ # start watchdog to trigger complete abort (after a grace period) if any
+ # gem5 process dies
+@@ -279,7 +303,7 @@
+ do
+     wait $p || ((NFAIL+=1))
+ done
+-wait $SERVER_PID || ((NFAIL+=1))
++wait $SWITCH_PID || ((NFAIL+=1))
+ 
+ # all done, let's terminate the watchdog
+ kill $WATCHDOG_PID 2>/dev/null
+diff --git a/util/multi/test/bootscript.rcS b/util/multi/test/bootscript.rcS
+--- a/util/multi/test/bootscript.rcS
++++ b/util/multi/test/bootscript.rcS
+@@ -52,7 +52,9 @@
+ 
+ # Retrieve multi-gem5 rank and size parameters using magic keys
+ MY_RANK=$(/sbin/m5 initparam 1234)
++[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+ MY_SIZE=$(/sbin/m5 initparam 1235)
++[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+ 
+ /bin/hostname node${MY_RANK}
+ 
+@@ -85,9 +87,13 @@
+ 
+ if [ "$MY_RANK" == "0" ]
+ then
+-    /sbin/m5 checkpoint
++    # Trigger an immediate checkpoint at the next sync (by passing a non-zero
++    # delay param to m5 ckpt)
++    /sbin/m5 checkpoint 1
+     echo "A real multi node workload might start here ..."
+-    /sbin/m5 exit 0
++    # Trigger an immediate exit at the next sync (by passing a non-zero delay
++    # param to m5 exit)
++    /sbin/m5 exit 1
+ else
+     # This is to avoid other (rank!=0) gem5 processes exiting
+     # before the test (started by rank 0) completes. When rank 0 completes the
+diff --git a/util/multi/test/test-2nodes-AArch64.sh b/util/multi/test/test-2nodes-AArch64.sh
+--- a/util/multi/test/test-2nodes-AArch64.sh
++++ b/util/multi/test/test-2nodes-AArch64.sh
+@@ -47,20 +47,26 @@
+ 
+ GEM5_DIR=$(pwd)/$(dirname $0)/../../..
+ 
++M5_PATH=$HOME/GEM5/public_dist
++export M5_PATH
++
++
++
+ IMG=$M5_PATH/disks/aarch64-ubuntu-trusty-headless.img
+ VMLINUX=$M5_PATH/binaries/vmlinux.aarch64.20140821
+ DTB=$M5_PATH/binaries/vexpress.aarch64.20140821.dtb
+ 
+ SYS_CONFIG=$GEM5_DIR/configs/example/fs.py
++#SYS_CONFIG=$HOME/GEM5/BRANDNEW/gem5-obj/configs/hpc/RealViewHPC.py
+ GEM5_EXE=$GEM5_DIR/build/ARM/gem5.opt
+ 
+ BOOT_SCRIPT=$GEM5_DIR/util/multi/test/bootscript.rcS
+ GEM5_MULTI_SH=$GEM5_DIR/util/multi/gem5-multi.sh
+ 
+-#DEBUG_FLAGS="--debug-flags=MultiEthernet"
++DEBUG_FLAGS="--debug-flags=MultiEthernet,MultiEthernetPkt"
+ #CHKPT_RESTORE="-r1"
+ 
+-NNODES=10
++NNODES=2
+ 
+ $GEM5_MULTI_SH -n $NNODES $GEM5_EXE $DEBUG_FLAGS $SYS_CONFIG   \
+     --cpu-type=atomic                                          \
