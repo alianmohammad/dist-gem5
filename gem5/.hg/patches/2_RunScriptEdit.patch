@@ -1,0 +1,393 @@
+# HG changeset patch
+# Parent c7600c9876f9531d2add0458eb445dff49171626
+
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -278,8 +278,6 @@
+     parser.add_option("--multi", action="store_true",
+                       help="Parallel multi gem5 simulation.")
+     parser.add_option("--is-switch", action="store_true")
+-    parser.add_option("--num-nodes", default=2, action="store", type="int",
+-                      help="Number of simulated nodes")
+     parser.add_option("--multi-rank", default=0, action="store", type="int",
+                       help="Rank of this system within the multi gem5 run.")
+     parser.add_option("--multi-size", default=0, action="store", type="int",
+diff --git a/configs/example/sw.py b/configs/example/sw.py
+--- a/configs/example/sw.py
++++ b/configs/example/sw.py
+@@ -54,7 +54,7 @@
+ def build_switch(options):
+     # instantiate an EtherSwitch with "num_node" ports. Also pass along
+     # timing parameters
+-    switch = EtherSwitch(port_count = options.num_nodes)
++    switch = EtherSwitch(port_count = options.multi_size)
+     # instantiate etherlinks to connect switch box ports to ethertap objects
+     switch.portlink = [MultiEtherLink(speed = options.ethernet_linkspeed,
+                                       delay = options.ethernet_linkdelay,
+@@ -65,8 +65,8 @@
+                                       sync_start = options.multi_sync_start,
+                                       sync_repeat = options.multi_sync_repeat,
+                                       is_switch = True,
+-                                      num_nodes = options.num_nodes)
+-                       for i in xrange(options.num_nodes)]
++                                      num_nodes = options.multi_size)
++                       for i in xrange(options.multi_size)]
+ 
+     for (i, link) in enumerate(switch.portlink):
+         link.int0 = switch.interface[i]
+diff --git a/util/multi/gem5-multi.sh b/util/multi/gem5-multi.sh
+--- a/util/multi/gem5-multi.sh
++++ b/util/multi/gem5-multi.sh
+@@ -68,13 +68,17 @@
+ # print help
+ usage_func ()
+ {
+-    echo "Usage:$0 [-debug] [-n nnodes] [-s switch] [-p port] gem5_exe gem5_args"
+-    echo "     -debug   : debug mode (start gem5 in gdb)"
+-    echo "     nnodes   : number of gem5 processes"
+-    echo "     switch   : switch config file"
+-    echo "     port     : switch listen port"
+-    echo "     gem5_exe : gem5 executable (full path required)"
+-    echo "     gem5_args: usual gem5 arguments ( m5 options, config script options)"
++    echo "Usage:$0 [-debug] [-d debug-flags] [-n nnodes] [-f fullsystem] [-s switch] [-p port] [-r rundir] [-c ckptdir] gem5_exe gem5_args"
++    echo "     -debug    : debug mode (start gem5 in gdb)"
++    echo "     debugflags: debug flags for trace based debugging"
++    echo "     nnodes    : number of gem5 processes"
++    echo "     fullsystem: fullsystem config file"
++    echo "     switch    : switch config file"
++    echo "     port      : switch listen port"
++    echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
++    echo "     ckptdir   : dump/restore checkpoints to/from this path. If not specified, current dir will be used"
++    echo "     gem5_exe  : gem5 executable (full path required)"
++    echo "     gem5_args : usual gem5 arguments ( m5 options, config script options)"
+     echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
+ }
+ 
+@@ -88,6 +92,14 @@
+             NNODES=$2
+             shift 2
+             ;;
++        x-d|x-debug-flags)
++            GEM5_DEBUG_FLAGS=$2
++            shift 2
++            ;;
++        x-f|x-fullsystem)
++            FS_CONFIG=$2
++            shift 2
++            ;;
+         x-s|x-switch)
+             SWITCH_CONFIG=$2
+             shift 2
+@@ -100,6 +112,14 @@
+             GEM5_DEBUG="-debug"
+             shift 1
+             ;;
++        x-r|x-rundir)
++            RUN_DIR=$2
++            shift 2
++            ;;
++        x-c|x-ckptdir)
++            CKPT_DIR=$2
++            shift 2
++            ;;
+         *)
+             break
+             ;;
+@@ -112,45 +132,25 @@
+ shift
+ GEM5_ARGS="$*"
+ 
+-# Extract gem5 debug and checkpoint restore flags for the switch process
+-while (($# > 0))
+-do
+-    case "x$1" in
+-	x--debug-flags=*)
+-	    GEM5_DEBUG_FLAGS=$1
+-	    shift
+-	    ;;
+-	x-r)
+-	    GEM5_CKPT_RESTORE="-r$2"
+-	    shift 2
+-	    ;;
+-	x-r*)
+-	    GEM5_CKPT_RESTORE=$1
+-	    shift
+-	    ;;
+-	x--checkpoint-restore)
+-	    GEM5_CKPT_RESTORE="$1 $2"
+-	    shift 2
+-	    ;;
+-	*)
+-	    shift
+-	    ;;
+-    esac
+-done
+-
+ # Default values to use (in case they are not defined as command line options)
+-DEFAULT_SWITCH_CONFIG=$(cd $(dirname $0); pwd)/../../configs/example/sw.py
++DEFAULT_FS_CONFIG=$M5_PATH/configs/example/fs.py
++DEFAULT_SWITCH_CONFIG=$M5_PATH/configs/example/sw.py
+ DEFAULT_SWITCH_PORT=2200
+ 
++[ -z "$FS_CONFIG" ]  && FS_CONFIG=$DEFAULT_FS_CONFIG
+ [ -z "$SWITCH_CONFIG" ]  && SWITCH_CONFIG=$DEFAULT_SWITCH_CONFIG
+ [ -z "$SWITCH_PORT" ] && SWITCH_PORT=$DEFAULT_SWITCH_PORT
+ [ -z "$NNODES" ]      && NNODES=2
+-
++[ -z "$RUN_DIR" ]      && RUN_DIR=$(pwd)
++[ -z "$CKPT_DIR" ]      && CKPT_DIR=$(pwd)
++! [ -z "$GEM5_DEBUG_FLAGS" ] && GEM5_DEBUG_FLAGS="--debug-flags=$GEM5_DEBUG_FLAGS"
+ 
+ #  Check if all the executables we need exist
++[ -f "$FS_CONFIG" ] || { echo "Switch config ${FS_CONFIG} not found"; exit 1; }
+ [ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
+ [ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
+-
++# make sure that RUN_DIR exists
++mkdir -p $RUN_DIR > /dev/null 2>&1 
+ 
+ declare -a SSH_PIDS
+ declare -a HOSTS
+@@ -188,7 +188,7 @@
+ {
+     echo
+     echo "KILLED $(date)"
+-    # Try to Kill the server first. That should trigger an exit for all connectedd
++    # Try to Kill the server first. That should trigger an exit for all connected
+     # gem5 processes.
+     [ "x$SWITCH_PID" != "x" ] && kill $SWITCH_PID 2>/dev/null
+     sleep 20
+@@ -242,12 +242,29 @@
+       then
+ 	      echo "DEBUG starting terminal..."
+ 	      MY_ARGS="$@"
+-	      xterm -e "gdb --args $MY_ARGS"
++	      xterm -e "gdb --args $MY_ARGS" &
+       else
+-        ssh $HOST $ENV_ARGS "$@" &>log.$N &
++        ssh $HOST $ENV_ARGS "$@" &> $RUN_DIR/log.$N &
+       fi
+ }
+ 
++connected ()
++{
++    FILE=$1
++    STRING=$2
++    echo -n "waiting for $3 to start "
++    while : ;
++    do
++        kill -0 $4 || { echo "Failed to start $3"; exit -1; }
++        [[ -f "$FILE" ]] &&                                                   \
++        grep -q "$STRING" "$FILE" &&                                          \
++        echo -e "\nnode #$3 started" &&                                       \
++        break
++
++        sleep 2
++        echo -n "."
++    done
++}
+ 
+ # Trigger full clean up in case we are being killed by external signal
+ trap 'abort_func' INT TERM
+@@ -255,14 +272,26 @@
+ # env args to be passed explicitly to gem5 processes started via ssh
+ ENV_ARGS="LD_LIBRARY_PATH=$LD_LIBRARY_PATH M5_PATH=$M5_PATH"
+ 
++#cleanup log files before starting gem5 processes
++rm $RUN_DIR/log.switch > /dev/null 2>&1
++
++# make sure that CKPT_DIR exists
++mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1 
+ # launch switch gem5
+ echo "launch switch gem5 process ..."
+-$GEM5_EXE -d $(pwd)/m5out.switch $GEM5_DEBUG_FLAGS $SWITCH_CONFIG $GEM5_CKPT_RESTORE --is-switch --num-nodes=$NNODES --multi-server-port=$SWITCH_PORT &>log.switch &
++$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
++             $GEM5_DEBUG_FLAGS                                                \
++             $SWITCH_CONFIG                                                   \
++             $GEM5_ARGS                                                       \
++             --checkpoint-dir=$CKPT_DIR/m5out.switch                          \
++             --is-switch                                                      \
++             --multi-size=$NNODES                                             \
++             --multi-server-port=$SWITCH_PORT &> $RUN_DIR/log.switch &
++SWITCH_PID=$!
+ 
+-SWITCH_PID=$!
+-sleep 10
+-kill -0 $SWITCH_PID || { echo "Failed to start switch"; exit -1; }
+-LINE=$(grep -r "tcp_iface listening on port" log.switch)
++# block here till switch process starts
++connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SWITCH_PID
++LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
+ 
+ IFS=' ' read -ra ADDR <<< "$LINE"
+ # acutal port that switch is listening on may be different 
+@@ -277,14 +306,26 @@
+     h=${HOSTS[$i]}
+     for ((j=0; j < ${NCORES[i]}; j++))
+     do
++        #cleanup log files before starting gem5 processes
++        rm $RUN_DIR/log.$n > /dev/null 2>&1
++        # make sure that CKPT_DIR exists
++        mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
+ 	    echo "starting gem5 on $h ..."
+-	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $(pwd)/m5out.$n $GEM5_ARGS \
+-	    --multi                                                              \
+-	    --multi-rank=$n                                                      \
+-	    --multi-size=$NNODES                                                 \
+-        --multi-server-name=${HOSTS[0]}                                      \
++	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n           \
++        $GEM5_DEBUG_FLAGS                                                     \
++        $FS_CONFIG                                                            \
++        $GEM5_ARGS                                                            \
++        --checkpoint-dir=$CKPT_DIR/m5out.$n                                   \
++	    --multi                                                               \
++	    --multi-rank=$n                                                       \
++	    --multi-size=$NNODES                                                  \
++        --multi-server-name=${HOSTS[0]}                                       \
+         --multi-server-port=$SWITCH_PORT
+ 	    SSH_PIDS[$n]=$!
++        if [ "x$GEM5_DEBUG" == "x" ]
++        then
++            connected $RUN_DIR/log.$n "Listening" $j ${SSH_PIDS[$n]}
++        fi
+ 	    ((n+=1))
+     done
+ done
+diff --git a/util/multi/test/bootscript.rcS b/util/multi/test/bootscript.rcS
+--- a/util/multi/test/bootscript.rcS
++++ b/util/multi/test/bootscript.rcS
+@@ -56,6 +56,39 @@
+ MY_SIZE=$(/sbin/m5 initparam 1235)
+ [ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+ 
++
++echo "***** Start boot script! *****"
++if [ "${RUNSCRIPT_VAR+set}" != set ]
++then
++    # Signal our future self that it's safe to continue
++    echo "RUNSCRIPT_VAR not set! Setting it ..."
++    export RUNSCRIPT_VAR=1
++else
++    if [ "$MY_RANK" == "0" ]
++    then
++        # We've already executed once, so we should exit
++        echo "calling m5 exit!"
++        /sbin/m5 exit
++    else
++        echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
++        echo "Else part - Loading new script..."
++        /sbin/m5 readfile > /tmp/runscript1.sh
++        chmod 755 /tmp/runscript1.sh
++
++        # Execute the new runscript
++        if [ -s /tmp/runscript1.sh ]
++        then
++            #/system/bin/sh /data/runscript1.sh
++            echo "Else part - executing newly loaded script ...!"
++            /bin/bash /tmp/runscript1.sh
++        else 
++            echo "Else part - Script not specified."
++            echo "Else part - Exiting..." 
++            /sbin/m5 exit
++        fi
++    fi
++fi
++
+ /bin/hostname node${MY_RANK}
+ 
+ # Keep MAC address assignment simple for now ...
+@@ -75,33 +108,42 @@
+ 
+ echo "Hello from $MY_RANK of $MY_SIZE"
+ 
+-# Now that our network interface is configured we can use the usual commands to
+-# contact the other systems, e.g. let's try to ping a "neighbour" system
+-if ((MY_RANK < MY_SIZE - 1))
+-then
+-    ping -c 1 192.168.0.$((MY_ADDR + 1))
+-else
+-    ping -c 1 192.168.0.2
+-fi
+-
+ 
+ if [ "$MY_RANK" == "0" ]
+ then
+     # Trigger an immediate checkpoint at the next sync (by passing a non-zero
+     # delay param to m5 ckpt)
+     /sbin/m5 checkpoint 1
+-    echo "A real multi node workload might start here ..."
+-    # Trigger an immediate exit at the next sync (by passing a non-zero delay
+-    # param to m5 exit)
+-    /sbin/m5 exit 1
+ else
+-    # This is to avoid other (rank!=0) gem5 processes exiting
+-    # before the test (started by rank 0) completes. When rank 0 completes the
+-    # test it will exit and that will trigger a notification to all the peer
+-    # gem5 processes to stop the simulation.
+-    echo "sleep forever..."
+-    while /bin/true
+-    do
+-	sleep 5
+-    done
++    # do nothing, just iterate through the script
++    echo "do nothing, just iterate through the script ..."
+ fi
++
++#THIS IS WHERE EXECUTION BEGINS FROM AFTER RESTORING FROM CKPT
++if [ "$RUNSCRIPT_VAR" -eq 1 ]
++then
++
++    # Signal our future self not to recurse infinitely
++    export RUNSCRIPT_VAR=2
++    echo "3. RUNSCRIPT_VAR is $RUNSCRIPT_VAR"
++
++    # Read the script for the checkpoint restored execution
++    echo "Loading new script..."
++    /sbin/m5 readfile > /tmp/runscript1.sh
++    chmod 755 /tmp/runscript1.sh
++
++    # Execute the new runscript
++    if [ -s /tmp/runscript1.sh ]
++    then
++        #/system/bin/sh /data/runscript1.sh
++        echo "executing newly loaded script ..."
++        /bin/bash /tmp/runscript1.sh
++
++    else
++        echo "Script not specified. Dropping into shell..."
++    fi
++
++fi
++
++echo "Fell through script. Exiting..."
++/sbin/m5 exit
+diff --git a/util/multi/test/test-2nodes-AArch64.sh b/util/multi/test/test-2nodes-AArch64.sh
+--- a/util/multi/test/test-2nodes-AArch64.sh
++++ b/util/multi/test/test-2nodes-AArch64.sh
+@@ -47,8 +47,8 @@
+ 
+ GEM5_DIR=$(pwd)/$(dirname $0)/../../..
+ 
+-M5_PATH=$HOME/GEM5/public_dist
+-export M5_PATH
++#M5_PATH=$HOME/GEM5/public_dist
++#export M5_PATH
+ 
+ 
+ 
+@@ -63,12 +63,12 @@
+ BOOT_SCRIPT=$GEM5_DIR/util/multi/test/bootscript.rcS
+ GEM5_MULTI_SH=$GEM5_DIR/util/multi/gem5-multi.sh
+ 
+-DEBUG_FLAGS="--debug-flags=MultiEthernet,MultiEthernetPkt"
++DEBUG_FLAGS="-d MultiEthernet,MultiEthernetPkt"
+ #CHKPT_RESTORE="-r1"
+ 
+ NNODES=2
+ 
+-$GEM5_MULTI_SH -n $NNODES $GEM5_EXE $DEBUG_FLAGS $SYS_CONFIG   \
++$GEM5_MULTI_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE   \
+     --cpu-type=atomic                                          \
+     --num-cpus=1                                               \
+     --machine-type=VExpress_EMM64                              \
