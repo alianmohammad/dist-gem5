@@ -1,168 +1,52 @@
 # HG changeset patch
-# Parent 84ef9f9d6e94ead57920c4b81dbc7cc12925778a
-
-diff --git a/configs/common/FSConfig.py b/configs/common/FSConfig.py
---- a/configs/common/FSConfig.py
-+++ b/configs/common/FSConfig.py
-@@ -647,7 +647,7 @@
-     return self
+# Parent 3648cc90b58e80c1bbe4bcf1e818d969bc950d0b
+diff -r 3648cc90b58e -r 7056641348f3 src/arch/alpha/isa/decoder.isa
+--- a/src/arch/alpha/isa/decoder.isa	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/arch/alpha/isa/decoder.isa	Tue Oct 27 17:28:19 2015 +0000
+@@ -982,7 +982,7 @@
+                 PseudoInst::loadsymbol(xc->tcBase());
+             }}, No_OpClass, IsNonSpeculative);
+             0x30: initparam({{
+-                Ra = PseudoInst::initParam(xc->tcBase());
++                Ra = PseudoInst::initParam(xc->tcBase(), R16);
+             }});
+             0x40: resetstats({{
+                 PseudoInst::resetstats(xc->tcBase(), R16, R17);
+diff -r 3648cc90b58e -r 7056641348f3 src/arch/arm/isa/insts/m5ops.isa
+--- a/src/arch/arm/isa/insts/m5ops.isa	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/arch/arm/isa/insts/m5ops.isa	Tue Oct 27 17:28:19 2015 +0000
+@@ -276,13 +276,13 @@
+     exec_output += PredOpExecute.subst(loadsymbolIop)
  
+     initparamCode = '''
+-    uint64_t ip_val  = PseudoInst::initParam(xc->tcBase());
++    uint64_t ip_val  = PseudoInst::initParam(xc->tcBase(), join32to64(R1, R0));
+     R0 = bits(ip_val, 31, 0);
+     R1 = bits(ip_val, 63, 32);
+     '''
  
--def makeMultiRoot(testSystem,
-+def makeDistRoot(testSystem,
-                   rank,
-                   size,
-                   server_name,
-@@ -660,10 +660,10 @@
-     self = Root(full_system = True)
-     self.testsys = testSystem
+     initparamCode64 = '''
+-    X0 = PseudoInst::initParam(xc->tcBase());
++    X0 = PseudoInst::initParam(xc->tcBase(), X0);
+     '''
  
--    self.etherlink = MultiEtherLink(speed = linkspeed,
-+    self.etherlink = DistEtherLink(speed = linkspeed,
-                                     delay = linkdelay,
--                                    multi_rank = rank,
--                                    multi_size = size,
-+                                    dist_rank = rank,
-+                                    dist_size = size,
-                                     server_name = server_name,
-                                     server_port = server_port,
-                                     sync_start = sync_start,
-@@ -674,7 +674,7 @@
-     elif hasattr(testSystem, 'tsunami'):
-         self.etherlink.int0 = Parent.testsys.tsunami.ethernet.interface
-     else:
--        fatal("Don't know how to connect MultiEtherLink to this system")
-+        fatal("Don't know how to connect DistEtherLink to this system")
- 
-     if dumpfile:
-         self.etherdump = EtherDump(file=dumpfile)
-diff --git a/configs/common/Options.py b/configs/common/Options.py
---- a/configs/common/Options.py
-+++ b/configs/common/Options.py
-@@ -275,29 +275,29 @@
-     # Benchmark options
-     parser.add_option("--dual", action="store_true",
-                       help="Simulate two systems attached with an ethernet link")
--    parser.add_option("--multi", action="store_true",
--                      help="Parallel multi gem5 simulation.")
-+    parser.add_option("--dist", action="store_true",
-+                      help="Parallel distributed gem5 simulation.")
-     parser.add_option("--is-switch", action="store_true")
--    parser.add_option("--multi-rank", default=0, action="store", type="int",
--                      help="Rank of this system within the multi gem5 run.")
--    parser.add_option("--multi-size", default=0, action="store", type="int",
--                      help="Number of gem5 processes within the multi gem5 run.")
--    parser.add_option("--multi-server-name",
-+    parser.add_option("--dist-rank", default=0, action="store", type="int",
-+                      help="Rank of this system within the dist gem5 run.")
-+    parser.add_option("--dist-size", default=0, action="store", type="int",
-+                      help="Number of gem5 processes within the dist gem5 run.")
-+    parser.add_option("--dist-server-name",
-                       default="127.0.0.1",
-                       action="store", type="string",
-                       help="Name of the message server host\nDEFAULT: localhost")
--    parser.add_option("--multi-server-port",
-+    parser.add_option("--dist-server-port",
-                       default=2200,
-                       action="store", type="int",
-                       help="Message server listen port\nDEFAULT: 2200")
--    parser.add_option("--multi-sync-repeat",
-+    parser.add_option("--dist-sync-repeat",
-                       default="0us",
-                       action="store", type="string",
--                      help="Repeat interval for synchronisation barriers among multi gem5 processes\nDEFAULT: --ethernet-linkdelay")
--    parser.add_option("--multi-sync-start",
-+                      help="Repeat interval for synchronisation barriers among dist-gem5 processes\nDEFAULT: --ethernet-linkdelay")
-+    parser.add_option("--dist-sync-start",
-                       default="5200000000000t",
-                       action="store", type="string",
--                      help="Time to schedule the first multi synchronisation barrier\nDEFAULT:5200000000000t")
-+                      help="Time to schedule the first dist synchronisation barrier\nDEFAULT:5200000000000t")
-     parser.add_option("-b", "--benchmark", action="store", type="string",
-                       dest="benchmark",
-                       help="Specify the benchmark to run. Available benchmarks: %s"\
-diff --git a/configs/example/fs.py b/configs/example/fs.py
---- a/configs/example/fs.py
-+++ b/configs/example/fs.py
-@@ -328,15 +328,15 @@
- if len(bm) == 2:
-     drive_sys = build_drive_system(np)
-     root = makeDualRoot(True, test_sys, drive_sys, options.etherdump)
--elif len(bm) == 1 and options.multi:
--    # This system is part of a multi-gem5 simulation
--    root = makeMultiRoot(test_sys,
--                         options.multi_rank,
--                         options.multi_size,
--                         options.multi_server_name,
--                         options.multi_server_port,
--                         options.multi_sync_repeat,
--                         options.multi_sync_start,
-+elif len(bm) == 1 and options.dist:
-+    # This system is part of a dist-gem5 simulation
-+    root = makeDistRoot(test_sys,
-+                         options.dist_rank,
-+                         options.dist_size,
-+                         options.dist_server_name,
-+                         options.dist_server_port,
-+                         options.dist_sync_repeat,
-+                         options.dist_sync_start,
-                          options.ethernet_linkspeed,
-                          options.ethernet_linkdelay,
-                          options.etherdump);
-diff --git a/configs/example/sw.py b/configs/example/sw.py
---- a/configs/example/sw.py
-+++ b/configs/example/sw.py
-@@ -1,4 +1,4 @@
--# Copyright (c) 2015 The University of Wisconsin Madison
-+# Copyright (c) 2015 The University of Illinois Urbana Champaign
- # All rights reserved
- #
- # The license below extends only to copyright in the software and shall
-@@ -35,8 +35,8 @@
- #
- # Authors: Mohammad Alian
- 
--# This is an example of an n port network switch (star topology) to work in
--# pd-gem5. Users can extend this to have different different topologies
-+# This is an example of an n port network switch to work in dist-gem5.
-+# Users can extend this to have different different topologies
- 
- import optparse
- import sys
-@@ -54,19 +54,19 @@
- def build_switch(options):
-     # instantiate an EtherSwitch with "num_node" ports. Also pass along
-     # timing parameters
--    switch = EtherSwitch(port_count = options.multi_size)
-+    switch = EtherSwitch(port_count = options.dist_size)
-     # instantiate etherlinks to connect switch box ports to ethertap objects
--    switch.portlink = [MultiEtherLink(speed = options.ethernet_linkspeed,
-+    switch.portlink = [DistEtherLink(speed = options.ethernet_linkspeed,
-                                       delay = options.ethernet_linkdelay,
--                                      multi_rank = options.multi_rank,
--                                      multi_size = options.multi_size,
--                                      server_name = options.multi_server_name,
--                                      server_port = options.multi_server_port,
--                                      sync_start = options.multi_sync_start,
--                                      sync_repeat = options.multi_sync_repeat,
-+                                      dist_rank = options.dist_rank,
-+                                      dist_size = options.dist_size,
-+                                      server_name = options.dist_server_name,
-+                                      server_port = options.dist_server_port,
-+                                      sync_start = options.dist_sync_start,
-+                                      sync_repeat = options.dist_sync_repeat,
-                                       is_switch = True,
--                                      num_nodes = options.multi_size)
--                       for i in xrange(options.multi_size)]
-+                                      num_nodes = options.dist_size)
-+                       for i in xrange(options.dist_size)]
- 
-     for (i, link) in enumerate(switch.portlink):
-         link.int0 = switch.interface[i]
-diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
---- a/src/dev/Ethernet.py
-+++ b/src/dev/Ethernet.py
-@@ -58,18 +58,18 @@
+     initparamIop = InstObjParams("initparam", "Initparam", "PredOp",
+diff -r 3648cc90b58e -r 7056641348f3 src/arch/x86/isa/decoder/two_byte_opcodes.isa
+--- a/src/arch/x86/isa/decoder/two_byte_opcodes.isa	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/arch/x86/isa/decoder/two_byte_opcodes.isa	Tue Oct 27 17:28:19 2015 +0000
+@@ -173,7 +173,7 @@
+                         PseudoInst::m5fail(xc->tcBase(), Rdi, Rsi);
+                     }}, IsNonSpeculative);
+                     0x30: m5initparam({{
+-                        Rax = PseudoInst::initParam(xc->tcBase());
++                        Rax = PseudoInst::initParam(xc->tcBase(), Rdi);
+                     }}, IsNonSpeculative);
+                     0x31: m5loadsymbol({{
+                         PseudoInst::loadsymbol(xc->tcBase());
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/Ethernet.py
+--- a/src/dev/Ethernet.py	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/Ethernet.py	Tue Oct 27 17:28:19 2015 +0000
+@@ -58,19 +58,22 @@
      speed = Param.NetworkBandwidth('1Gbps', "link speed")
      dump = Param.EtherDump(NULL, "dump object")
  
@@ -177,9 +61,8 @@ diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
      delay_var = Param.Latency('0ns', "packet transmit delay variability")
      speed = Param.NetworkBandwidth('1Gbps', "link speed")
      dump = Param.EtherDump(NULL, "dump object")
--    multi_rank = Param.UInt32('0', "Rank of this gem5 process (multi run)")
--    multi_size = Param.UInt32('1', "Number of gem5 processes (multi run)")
--    sync_start = Param.Latency('5200000000000t', "first multi sync barrier")
+-    multi_rank  =  Param.UInt32('0', "Rank of the this gem5 process (multi run)")
+-    sync_start  = Param.Latency('5200000000000t', "first multi sync barrier")
 -    sync_repeat = Param.Latency('10us', "multi sync barrier repeat")
 +    dist_rank = Param.UInt32('0', "Rank of this gem5 process (dist run)")
 +    dist_size = Param.UInt32('1', "Number of gem5 processes (dist run)")
@@ -187,14 +70,45 @@ diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
 +    sync_repeat = Param.Latency('10us', "dist sync barrier repeat")
      server_name = Param.String('localhost', "Message server name")
      server_port = Param.UInt32('2200', "Message server port")
-     is_switch = Param.Bool(False, "true if this a link in etherswitch")
-diff --git a/src/dev/SConscript b/src/dev/SConscript
---- a/src/dev/SConscript
-+++ b/src/dev/SConscript
-@@ -61,8 +61,8 @@
++    is_switch = Param.Bool(False, "true if this a link in etherswitch")
++    num_nodes = Param.UInt32('2', "Number of simulate nodes")
+ 
+ class EtherBus(EtherObject):
+     type = 'EtherBus'
+@@ -79,6 +82,20 @@
+     dump = Param.EtherDump(NULL, "dump object")
+     speed = Param.NetworkBandwidth('100Mbps', "bus speed in bits per second")
+ 
++class EtherSwitch(EtherObject):
++    type = 'EtherSwitch'
++    cxx_header = "dev/etherswitch.hh"
++    dump = Param.EtherDump(NULL, "dump object")
++    fabric_speed = Param.NetworkBandwidth('1Gbps', "fabric links speed in bits "
++                                          "per second")
++    interface = VectorMasterPort("Ethernet Interface")
++    input_buffer_size = Param.MemorySize('1MB', "size of input port buffers")
++    output_buffer_size = Param.MemorySize('1MB', "size of output port buffers")
++    delay = Param.Latency('0us', "packet transmit delay")
++    delay_var = Param.Latency('0ns', "packet transmit delay variability")
++    port_count = Param.Int(4, "number of ports")
++    clock_period = Param.Latency('2ns', "switch clock period")
++
+ class EtherTap(EtherObject):
+     type = 'EtherTap'
+     cxx_header = "dev/ethertap.hh"
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/SConscript
+--- a/src/dev/SConscript	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/SConscript	Tue Oct 27 17:28:19 2015 +0000
+@@ -56,13 +56,13 @@
+ Source('disk_image.cc')
+ Source('dma_device.cc')
+ Source('etherbus.cc')
++Source('etherswitch.cc')
+ Source('etherdevice.cc')
  Source('etherdump.cc')
  Source('etherint.cc')
  Source('etherlink.cc')
+-Source('multi_packet.cc')
 -Source('multi_iface.cc')
 -Source('multi_etherlink.cc')
 +Source('dist_iface.cc')
@@ -202,23 +116,21 @@ diff --git a/src/dev/SConscript b/src/dev/SConscript
  Source('tcp_iface.cc')
  Source('etherpkt.cc')
  Source('ethertap.cc')
-@@ -90,9 +90,9 @@
+@@ -90,8 +90,9 @@
  DebugFlag('DMA')
  DebugFlag('DMACopyEngine')
  DebugFlag('Ethernet')
 -DebugFlag('MultiEthernet')
 -DebugFlag('MultiEthernetPkt')
--DebugFlag('MultiEthernetCmd')
 +DebugFlag('DistEthernet')
 +DebugFlag('DistEthernetPkt')
 +DebugFlag('DistEthernetCmd')
  DebugFlag('EthernetCksum')
  DebugFlag('EthernetDMA')
  DebugFlag('EthernetData')
-diff --git a/src/dev/dist_etherlink.cc b/src/dev/dist_etherlink.cc
-new file mode 100644
---- /dev/null
-+++ b/src/dev/dist_etherlink.cc
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_etherlink.cc
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/dev/dist_etherlink.cc	Tue Oct 27 17:28:19 2015 +0000
 @@ -0,0 +1,272 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
@@ -492,10 +404,9 @@ new file mode 100644
 +}
 +
 +
-diff --git a/src/dev/dist_etherlink.hh b/src/dev/dist_etherlink.hh
-new file mode 100644
---- /dev/null
-+++ b/src/dev/dist_etherlink.hh
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_etherlink.hh
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/dev/dist_etherlink.hh	Tue Oct 27 17:28:19 2015 +0000
 @@ -0,0 +1,234 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
@@ -731,10 +642,9 @@ new file mode 100644
 +};
 +
 +#endif // __DEV_MULTIETHERLINK_HH__
-diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
-new file mode 100644
---- /dev/null
-+++ b/src/dev/dist_iface.cc
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.cc
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/dev/dist_iface.cc	Tue Oct 27 17:28:19 2015 +0000
 @@ -0,0 +1,760 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
@@ -1496,10 +1406,9 @@ new file mode 100644
 +    }
 +    return val;
 +}
-diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
-new file mode 100644
---- /dev/null
-+++ b/src/dev/dist_iface.hh
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/dev/dist_iface.hh	Tue Oct 27 17:28:19 2015 +0000
 @@ -0,0 +1,575 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
@@ -2076,10 +1985,9 @@ new file mode 100644
 + };
 +
 +#endif
-diff --git a/src/dev/dist_packet.hh b/src/dev/dist_packet.hh
-new file mode 100644
---- /dev/null
-+++ b/src/dev/dist_packet.hh
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_packet.hh
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/dev/dist_packet.hh	Tue Oct 27 17:28:19 2015 +0000
 @@ -0,0 +1,106 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
@@ -2187,11 +2095,141 @@ new file mode 100644
 +};
 +
 +#endif
-diff --git a/src/dev/multi_etherlink.cc b/src/dev/multi_etherlink.cc
-deleted file mode 100644
---- a/src/dev/multi_etherlink.cc
-+++ /dev/null
-@@ -1,272 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/etherint.hh
+--- a/src/dev/etherint.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/etherint.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -65,7 +65,7 @@
+     void recvDone() { peer->sendDone(); }
+     virtual void sendDone() = 0;
+ 
+-    bool sendPacket(EthPacketPtr packet)
++    virtual bool sendPacket(EthPacketPtr packet)
+     { return peer ? peer->recvPacket(packet) : true; }
+     virtual bool recvPacket(EthPacketPtr packet) = 0;
+ 
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/etherlink.cc
+--- a/src/dev/etherlink.cc	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/etherlink.cc	Tue Oct 27 17:28:19 2015 +0000
+@@ -97,8 +97,7 @@
+         i = interface[1];
+     else
+         return NULL;
+-    if (i->getPeer())
+-        panic("interface already connected to\n");
++    fatal_if(i->getPeer(), "interface already connected to\n");
+ 
+     return i;
+ }
+@@ -111,7 +110,7 @@
+     rx->setRxInt(this);
+ }
+ 
+-EtherLink::Link::Link(const string &name, EtherLink *p, int num,
++EtherLink::Link::Link(const string &name, EtherObject *p, int num,
+                       double rate, Tick delay, Tick delay_var, EtherDump *d)
+     : objName(name), parent(p), number(num), txint(NULL), rxint(NULL),
+       ticksPerByte(rate), linkDelay(delay), delayVar(delay_var), dump(d),
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/etherlink.hh
+--- a/src/dev/etherlink.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/etherlink.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -67,6 +67,7 @@
+   protected:
+     class Interface;
+ 
++    public:
+     /*
+      * Model for a single uni-directional link
+      */
+@@ -75,11 +76,11 @@
+       protected:
+         const std::string objName;
+ 
+-        EtherLink *const parent;
++        EtherObject *const parent;
+         const int number;
+ 
+-        Interface *txint;
+-        Interface *rxint;
++        EtherInt *txint;
++        EtherInt *rxint;
+ 
+         const double ticksPerByte;
+         const Tick linkDelay;
+@@ -111,7 +112,7 @@
+         void txComplete(EthPacketPtr packet);
+ 
+       public:
+-        Link(const std::string &name, EtherLink *p, int num,
++        Link(const std::string &name, EtherObject *p, int num,
+              double rate, Tick delay, Tick delay_var, EtherDump *dump);
+         ~Link() {}
+ 
+@@ -120,13 +121,14 @@
+         bool busy() const { return (bool)packet; }
+         bool transmit(EthPacketPtr packet);
+ 
+-        void setTxInt(Interface *i) { assert(!txint); txint = i; }
+-        void setRxInt(Interface *i) { assert(!rxint); rxint = i; }
++        void setTxInt(EtherInt *i) { assert(!txint); txint = i; }
++        void setRxInt(EtherInt *i) { assert(!rxint); rxint = i; }
+ 
+         void serialize(const std::string &base, CheckpointOut &cp) const;
+         void unserialize(const std::string &base, CheckpointIn &cp);
+     };
+ 
++  protected:
+     /*
+      * Interface at each end of the link
+      */
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/etherpkt.cc
+--- a/src/dev/etherpkt.cc	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/etherpkt.cc	Tue Oct 27 17:28:19 2015 +0000
+@@ -52,19 +52,3 @@
+         arrayParamIn(cp, base + ".data", data, length);
+ }
+ 
+-void
+-EthPacketData::packAddress(uint8_t *src_addr,
+-                           uint8_t *dst_addr,
+-                           unsigned &nbytes)
+-{
+-    Net::EthHdr *hdr = (Net::EthHdr *)data;
+-    assert(hdr->src().size() == hdr->dst().size());
+-    if (nbytes < hdr->src().size())
+-        panic("EthPacketData::packAddress() Buffer overflow");
+-
+-    memcpy(dst_addr, hdr->dst().bytes(), hdr->dst().size());
+-    memcpy(src_addr, hdr->src().bytes(), hdr->src().size());
+-
+-    nbytes = hdr->src().size();
+-}
+-
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/etherpkt.hh
+--- a/src/dev/etherpkt.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/etherpkt.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -71,18 +71,6 @@
+     ~EthPacketData() { if (data) delete [] data; }
+ 
+   public:
+-    /**
+-     * This function pulls out the MAC source and destination addresses from
+-     * the packet data and stores them in the caller specified buffers.
+-     *
+-     * @param src_addr The buffer to store the source MAC address.
+-     * @param dst_addr The buffer to store the destination MAC address.
+-     * @param length This is an inout parameter. The caller stores in this
+-     * the size of the address buffers. On return, this will contain the
+-     * actual address size stored in the buffers. (We assume that source
+-     * address size is equal to that of the destination address.)
+-     */
+-    void packAddress(uint8_t *src_addr, uint8_t *dst_addr, unsigned &length);
+ 
+     void serialize(const std::string &base, CheckpointOut &cp) const;
+     void unserialize(const std::string &base, CheckpointIn &cp);
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_etherlink.cc
+--- a/src/dev/multi_etherlink.cc	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,266 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -2269,27 +2307,15 @@ deleted file mode 100644
 -    : EtherObject(p)
 -{
 -    DPRINTF(MultiEthernet,"MultiEtherLink::MultiEtherLink() "
--            "link delay:%llu ticksPerByte:%f\n", p->delay, p->speed);
+-            "link delay:%llu\n", p->delay);
 -
 -    txLink = new TxLink(name() + ".link0", this, p->speed, p->delay_var,
 -                        p->dump);
 -    rxLink = new RxLink(name() + ".link1", this, p->delay, p->dump);
 -
--    Tick sync_repeat;
--    if (p->sync_repeat != 0) {
--        if (p->sync_repeat != p->delay)
--            warn("MultiEtherLink(): sync_repeat is %lu and linkdelay is %lu",
--                 p->sync_repeat, p->delay);
--        sync_repeat = p->sync_repeat;
--    } else {
--        sync_repeat = p->delay;
--    }
--
 -    // create the multi (TCP) interface to talk to the peer gem5 processes.
--    multiIface = new TCPIface(p->server_name, p->server_port,
--                              p->multi_rank, p->multi_size,
--                              p->sync_start, sync_repeat, this, p->is_switch,
--                              p->num_nodes);
+-    multiIface = new TCPIface(p->server_name, p->server_port, p->multi_rank,
+-                              p->sync_start, p->sync_repeat, this);
 -
 -    localIface = new LocalIface(name() + ".int0", txLink, rxLink, multiIface);
 -}
@@ -2313,34 +2339,40 @@ deleted file mode 100644
 -    return localIface;
 -}
 -
+-void MultiEtherLink::memWriteback()
+-{
+-    DPRINTF(MultiEthernet,"MultiEtherLink::memWriteback() called\n");
+-    multiIface->drainDone();
+-}
+-
 -void
 -MultiEtherLink::serialize(CheckpointOut &cp) const
 -{
--    multiIface->serializeSection(cp, "multiIface");
--    txLink->serializeSection(cp, "txLink");
--    rxLink->serializeSection(cp, "rxLink");
+-    multiIface->serialize("multiIface", cp);
+-    txLink->serialize("txLink", cp);
+-    rxLink->serialize("rxLink", cp);
 -}
 -
 -void
 -MultiEtherLink::unserialize(CheckpointIn &cp)
 -{
--    multiIface->unserializeSection(cp, "multiIface");
--    txLink->unserializeSection(cp, "txLink");
--    rxLink->unserializeSection(cp, "rxLink");
+-    multiIface->unserialize("multiIface", cp);
+-    txLink->unserialize("txLink", cp);
+-    rxLink->unserialize("rxLink", cp);
 -}
 -
 -void
 -MultiEtherLink::init()
 -{
 -    DPRINTF(MultiEthernet,"MultiEtherLink::init() called\n");
--    multiIface->init();
+-    multiIface->initRandom();
 -}
 -
 -void
 -MultiEtherLink::startup()
 -{
 -    DPRINTF(MultiEthernet,"MultiEtherLink::startup() called\n");
--    multiIface->startup();
+-    multiIface->startPeriodicSync();
 -}
 -
 -void
@@ -2411,36 +2443,36 @@ deleted file mode 100644
 -}
 -
 -void
--MultiEtherLink::Link::serialize(CheckpointOut &cp) const
+-MultiEtherLink::Link::serialize(const string &base, CheckpointOut &cp) const
 -{
 -    bool packet_exists = (packet != nullptr);
--    SERIALIZE_SCALAR(packet_exists);
+-    paramOut(cp, base + ".packet_exists", packet_exists);
 -    if (packet_exists)
--        packet->serialize("packet", cp);
+-        packet->serialize(base + ".packet", cp);
 -
 -    bool event_scheduled = event->scheduled();
--    SERIALIZE_SCALAR(event_scheduled);
+-    paramOut(cp, base + ".event_scheduled", event_scheduled);
 -    if (event_scheduled) {
 -        Tick event_time = event->when();
--        SERIALIZE_SCALAR(event_time);
+-        paramOut(cp, base + ".event_time", event_time);
 -    }
 -}
 -
 -void
--MultiEtherLink::Link::unserialize(CheckpointIn &cp)
+-MultiEtherLink::Link::unserialize(const string &base, CheckpointIn &cp)
 -{
 -    bool packet_exists;
--    UNSERIALIZE_SCALAR(packet_exists);
+-    paramIn(cp, base + ".packet_exists", packet_exists);
 -    if (packet_exists) {
 -        packet = make_shared<EthPacketData>(16384);
--        packet->unserialize("packet", cp);
+-        packet->unserialize(base + ".packet", cp);
 -    }
 -
 -    bool event_scheduled;
--    UNSERIALIZE_SCALAR(event_scheduled);
+-    paramIn(cp, base + ".event_scheduled", event_scheduled);
 -    if (event_scheduled) {
 -        Tick event_time;
--        UNSERIALIZE_SCALAR(event_time);
+-        paramIn(cp, base + ".event_time", event_time);
 -        parent->schedule(*event, event_time);
 -    }
 -}
@@ -2464,11 +2496,10 @@ deleted file mode 100644
 -}
 -
 -
-diff --git a/src/dev/multi_etherlink.hh b/src/dev/multi_etherlink.hh
-deleted file mode 100644
---- a/src/dev/multi_etherlink.hh
-+++ /dev/null
-@@ -1,234 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_etherlink.hh
+--- a/src/dev/multi_etherlink.hh	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,235 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -2543,7 +2574,7 @@ deleted file mode 100644
 -     * The link will encapsulate and transfer Ethernet packets to/from
 -     * the message server.
 -     */
--    class Link : public Serializable
+-    class Link
 -    {
 -      protected:
 -        std::string objName;
@@ -2566,8 +2597,8 @@ deleted file mode 100644
 -        bool busy() const { return (bool)packet; }
 -        void setLocalInt(LocalIface *i) { assert(!localIface); localIface=i; }
 -
--        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+-        void serialize(const std::string &base, CheckpointOut &cp) const;
+-        void unserialize(const std::string &base, CheckpointIn &cp);
 -    };
 -
 -    /**
@@ -2695,19 +2726,19 @@ deleted file mode 100644
 -    virtual EtherInt *getEthPort(const std::string &if_name,
 -                                 int idx) M5_ATTR_OVERRIDE;
 -
--    virtual void init() M5_ATTR_OVERRIDE;
--    virtual void startup() M5_ATTR_OVERRIDE;
+-    void memWriteback() M5_ATTR_OVERRIDE;
+-    void init() M5_ATTR_OVERRIDE;
+-    void startup() M5_ATTR_OVERRIDE;
 -
 -    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
 -    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
 -};
 -
 -#endif // __DEV_MULTIETHERLINK_HH__
-diff --git a/src/dev/multi_iface.cc b/src/dev/multi_iface.cc
-deleted file mode 100644
---- a/src/dev/multi_iface.cc
-+++ /dev/null
-@@ -1,760 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_iface.cc
+--- a/src/dev/multi_iface.cc	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,622 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -2764,264 +2795,178 @@ deleted file mode 100644
 -#include "sim/sim_exit.hh"
 -#include "sim/sim_object.hh"
 -
--using namespace std;
+-
 -MultiIface::Sync *MultiIface::sync = nullptr;
 -MultiIface::SyncEvent *MultiIface::syncEvent = nullptr;
 -unsigned MultiIface::recvThreadsNum = 0;
 -MultiIface *MultiIface::master = nullptr;
 -
--void
--MultiIface::Sync::init(Tick start_tick, Tick repeat_tick)
--{
--    if (start_tick < firstAt) {
--        firstAt = start_tick;
--        inform("Next multi synchronisation tick is changed to %lu.\n", nextAt);
--    }
--
--    if (repeat_tick == 0)
--        panic("Multi synchronisation interval must be greater than zero");
--
--    if (repeat_tick < nextRepeat) {
--        nextRepeat = repeat_tick;
--        inform("Multi synchronisation interval is changed to %lu.\n",
--               nextRepeat);
--    }
--}
--
--MultiIface::SyncSwitch::SyncSwitch(int num_nodes)
--{
--    numNodes = num_nodes;
--    waitNum = num_nodes;
--    numExitReq = 0;
--    numCkptReq = 0;
--    doExit = false;
--    doCkpt = false;
--    firstAt = std::numeric_limits<Tick>::max();
--    nextAt = 0;
--    nextRepeat = std::numeric_limits<Tick>::max();
--}
--
--MultiIface::SyncNode::SyncNode()
--{
--    waitNum = 0;
--    needExit = ReqType::none;
--    needCkpt = ReqType::none;
--    doExit = false;
--    doCkpt = false;
--    firstAt = std::numeric_limits<Tick>::max();
--    nextAt = 0;
--    nextRepeat = std::numeric_limits<Tick>::max();
--}
--
--void
--MultiIface::SyncNode::run(bool same_tick)
+-bool
+-MultiIface::Sync::run(SyncTrigger t, Tick sync_tick)
 -{
 -    std::unique_lock<std::mutex> sync_lock(lock);
--    Header header;
 -
--    assert(waitNum == 0);
--    waitNum = MultiIface::recvThreadsNum;
--    // initiate the global synchronisation
--    header.msgType = MsgType::cmdSyncReq;
--    header.sendTick = curTick();
--    header.syncRepeat = nextRepeat;
--    header.needCkpt = needCkpt;
--    if (needCkpt != ReqType::none)
--        needCkpt = ReqType::pending;
--    header.needExit = needExit;
--    if (needCkpt != ReqType::none)
--        needCkpt = ReqType::pending;
--    MultiIface::master->sendCmd(header);
+-    trigger = t;
+-    if (trigger != SyncTrigger::periodic) {
+-        DPRINTF(MultiEthernet,"MultiIface::Sync::run() trigger:%d\n",
+-                (unsigned)trigger);
+-    }
+-
+-    switch (state) {
+-      case SyncState::asyncCkpt:
+-        switch (trigger) {
+-          case SyncTrigger::ckpt:
+-            assert(MultiIface::syncEvent->interrupted == false);
+-            state = SyncState::busy;
+-            break;
+-          case SyncTrigger::periodic:
+-            if (waitNum == 0) {
+-                // So all recv threads got an async checkpoint request already
+-                // and a simExit is scheduled at the end of the current tick
+-                // (i.e. it is a periodic sync scheduled at the same tick as
+-                // the simExit).
+-                state = SyncState::idle;
+-                DPRINTF(MultiEthernet,"MultiIface::Sync::run() interrupted "
+-                "due to async ckpt scheduled\n");
+-                return false;
+-            } else {
+-                // we still need to wait for some receiver thread to get the
+-                // aysnc ckpt request. We are going to proceed as 'interrupted'
+-                // periodic sync.
+-                state = SyncState::interrupted;
+-                DPRINTF(MultiEthernet,"MultiIface::Sync::run() interrupted "
+-                "due to ckpt request is coming in\n");
+-            }
+-            break;
+-          case SyncTrigger::atomic:
+-            assert(trigger != SyncTrigger::atomic);
+-        }
+-        break;
+-      case SyncState::idle:
+-        state = SyncState::busy;
+-        break;
+-        // Only one sync can be active at any time
+-      case SyncState::interrupted:
+-      case SyncState::busy:
+-        assert(state != SyncState::interrupted);
+-        assert(state != SyncState::busy);
+-        break;
+-    }
+-    // Kick-off the sync unless we are in the middle of an interrupted
+-    // periodic sync
+-    if (state != SyncState::interrupted) {
+-        assert(waitNum == 0);
+-        waitNum = MultiIface::recvThreadsNum;
+-        // initiate the global synchronisation
+-        assert(MultiIface::master != nullptr);
+-        MultiIface::master->syncRaw(triggerToMsg[(unsigned)trigger], sync_tick);
+-    }
 -    // now wait until all receiver threads complete the synchronisation
 -    auto lf = [this]{ return waitNum == 0; };
 -    cv.wait(sync_lock, lf);
--    // global barrier is done
--    assert(!same_tick || (nextAt == curTick()));
--}
 -
--
--void
--MultiIface::SyncSwitch::run(bool same_tick)
--{
--    std::unique_lock<std::mutex> sync_lock(lock);
--    Header header;
--    if (waitNum > 0) {
--        auto lf = [this]{ return waitNum == 0; };
--        cv.wait(sync_lock, lf);
--    }
--    assert(waitNum == 0);
--    assert(!same_tick || (nextAt == curTick()));
--    waitNum = numNodes;
--    // initiate the global synchronisation
--    header.msgType = MsgType::cmdSyncAck;
--    //header.sendTick = curTick();
--    header.sendTick = nextAt;
--    header.syncRepeat = nextRepeat;
--    if (doCkpt || numCkptReq == numNodes) {
--        doCkpt = true;
--        header.needCkpt = ReqType::immediate;
--        numCkptReq = 0;
--    } else {
--        header.needCkpt = ReqType::none;
--    }
--    if (doExit || numExitReq == numNodes) {
--        doExit = true;
--        header.needExit = ReqType::immediate;
--    } else {
--        header.needExit = ReqType::none;
--    }
--    MultiIface::master->sendCmd(header);
+-    // we are done
+-    assert(state == SyncState::busy || state == SyncState::interrupted);
+-    bool ret = (state != SyncState::interrupted);
+-    state = SyncState::idle;
+-    return ret;
 -}
 -
 -void
--MultiIface::SyncSwitch::progress(Tick send_tick,
--                                 Tick sync_repeat,
--                                 ReqType need_ckpt,
--                                 ReqType need_exit)
+-MultiIface::Sync::progress(MsgType msg)
 -{
 -    std::unique_lock<std::mutex> sync_lock(lock);
--    assert(waitNum > 0);
 -
--    if (send_tick > nextAt)
--        nextAt = send_tick;
--    if (nextRepeat > sync_repeat)
--        nextRepeat = sync_repeat;
--
--    if (need_ckpt == ReqType::collective)
--        numCkptReq++;
--    if (need_ckpt == ReqType::immediate)
--        doCkpt = true;
--    if (need_exit == ReqType::collective)
--        numExitReq++;
--    if (need_exit == ReqType::immediate)
--        doExit = true;
--
+-    switch (msg) {
+-      case MsgType::cmdAtomicSyncAck:
+-        assert(state == SyncState::busy && trigger == SyncTrigger::atomic);
+-        break;
+-      case MsgType::cmdPeriodicSyncAck:
+-        assert(state == SyncState::busy && trigger == SyncTrigger::periodic);
+-        break;
+-      case MsgType::cmdCkptSyncAck:
+-        assert(state == SyncState::busy && trigger == SyncTrigger::ckpt);
+-        break;
+-      case MsgType::cmdCkptSyncReq:
+-        switch (state) {
+-          case SyncState::busy:
+-            if (trigger == SyncTrigger::ckpt) {
+-                // We are already in a checkpoint sync but got another ckpt
+-                // sync request. This may happen if two (or more) peer gem5
+-                // processes try to start a ckpt nearly at the same time.
+-                // Incrementing waitNum here (before decrementing it below)
+-                // effectively results in ignoring this new ckpt sync request.
+-                waitNum++;
+-                break;
+-            }
+-            assert (waitNum == recvThreadsNum);
+-            state = SyncState::interrupted;
+-            // we need to fall over here to handle "recvThreadsNum == 1" case
+-          case SyncState::interrupted:
+-            assert(trigger == SyncTrigger::periodic);
+-            assert(waitNum >= 1);
+-            if (waitNum == 1) {
+-                exitSimLoop("checkpoint");
+-            }
+-            break;
+-          case SyncState::idle:
+-            // There is no on-going sync so we got an async ckpt request. If we
+-            // are the only receiver thread then we need to schedule the
+-            // checkpoint. Otherwise, only change the state to 'asyncCkpt' and
+-            // let the last receiver thread to schedule the checkpoint at the
+-            // 'asyncCkpt' case.
+-            // Note that a periodic or resume sync may start later and that can
+-            // trigger a state change to 'interrupted' (so the checkpoint may
+-            // get scheduled at 'interrupted' case finally).
+-            assert(waitNum == 0);
+-            state = SyncState::asyncCkpt;
+-            waitNum = MultiIface::recvThreadsNum;
+-            // we need to fall over here to handle "recvThreadsNum == 1" case
+-          case SyncState::asyncCkpt:
+-            assert(waitNum >= 1);
+-            if (waitNum == 1)
+-                exitSimLoop("checkpoint");
+-            break;
+-          default:
+-            panic("Unexpected state for checkpoint request message");
+-            break;
+-        }
+-        break;
+-      default:
+-        panic("Unknown msg type");
+-        break;
+-    }
 -    waitNum--;
--    // Notify the simulation thread if the on-going sync is complete
--    if (waitNum == 0) {
+-    assert(state != SyncState::idle);
+-    // Notify the simultaion thread if there is an on-going sync.
+-    if (state != SyncState::asyncCkpt) {
 -        sync_lock.unlock();
 -        cv.notify_one();
 -    }
 -}
 -
--void
--MultiIface::SyncNode::progress(Tick max_send_tick,
--                               Tick next_repeat,
--                               ReqType do_ckpt,
--                               ReqType do_exit)
+-void MultiIface::SyncEvent::start(Tick start, Tick interval)
 -{
--    std::unique_lock<std::mutex> sync_lock(lock);
--    assert(waitNum > 0);
--
--    nextAt = max_send_tick;
--    nextRepeat = next_repeat;
--    doCkpt = (do_ckpt != ReqType::none);
--    doExit = (do_exit != ReqType::none);
--
--    waitNum--;
--    // Notify the simulation thread if the on-going sync is complete
--    if (waitNum == 0) {
--        sync_lock.unlock();
--        cv.notify_one();
--    }
+-    assert(!scheduled());
+-    if (interval == 0)
+-        panic("Multi synchronisation period must be greater than zero");
+-    repeat = interval;
+-    schedule(start);
 -}
 -
 -void
--MultiIface::SyncNode::requestCkpt(ReqType req)
+-MultiIface::SyncEvent::adjust(Tick start_tick, Tick repeat_tick)
 -{
--   std::lock_guard<std::mutex> sync_lock(lock);
--   assert(req != ReqType::none);
--   if (needCkpt != ReqType::none)
--       warn("Ckpt requested multiple times (req:%d)\n", static_cast<int>(req));
--   if (needCkpt == ReqType::none || req == ReqType::immediate)
--       needCkpt = req;
--}
--
--void
--MultiIface::SyncNode::requestExit(ReqType req)
--{
--   std::lock_guard<std::mutex> sync_lock(lock);
--   assert(req != ReqType::none);
--   if (needExit != ReqType::none)
--       warn("Exit requested multiple times (req:%d)\n", static_cast<int>(req));
--   if (needExit == ReqType::none || req == ReqType::immediate)
--       needExit = req;
--}
--
--void
--MultiIface::Sync::drainComplete()
--{
--    if (doCkpt) {
--        // The first MultiIface object called this right before writing the
--        // checkpoint. We need to drain the underlying physical network here.
--        // Note that other gem5 peers may enter this barrier at different
--        // ticks due to draining.
--        run(false);
--        // Only the "first" MultiIface object has to perform the sync
--        doCkpt = false;
--    }
--}
--
--void
--MultiIface::SyncNode::serialize(CheckpointOut &cp) const
--{
--    int need_exit = static_cast<int>(needExit);
--    SERIALIZE_SCALAR(need_exit);
--}
--
--void
--MultiIface::SyncNode::unserialize(CheckpointIn &cp)
--{
--    int need_exit;
--    UNSERIALIZE_SCALAR(need_exit);
--    needExit = static_cast<ReqType>(need_exit);
--}
--
--void
--MultiIface::SyncSwitch::serialize(CheckpointOut &cp) const
--{
--    SERIALIZE_SCALAR(numExitReq);
--}
--
--void
--MultiIface::SyncSwitch::unserialize(CheckpointIn &cp)
--{
--    UNSERIALIZE_SCALAR(numExitReq);
--}
--
--void
--MultiIface::SyncEvent::start()
--{
--    // Note that this may be called either from startup() or drainResume()
--
--    // At this point, all MultiIface objects ha already called Sync::init() so
--    // we have a local minimum of the start tick and repeat for the periodic
--    // sync.
--    Tick firstAt  = MultiIface::sync->firstAt;
--    repeat = MultiIface::sync->nextRepeat;
--    // Do a global barrier to agree on a common repeat value (the smallest
--    // one from all participating nodes
--    MultiIface::sync->run(curTick() == 0);
--
--    assert(!MultiIface::sync->doCkpt);
--    assert(!MultiIface::sync->doExit);
--    assert(MultiIface::sync->nextAt >= curTick());
--    assert(MultiIface::sync->nextRepeat <= repeat);
--
--    // if this is called at tick 0 then we use the config start param otherwise
--    // the maximum of the current tick of all participating nodes
--    if (curTick() == 0) {
--        assert(!scheduled());
--        assert(MultiIface::sync->nextAt == 0);
--        schedule(firstAt);
--    } else {
--        if (scheduled())
--            reschedule(MultiIface::sync->nextAt);
--        else
--            schedule(MultiIface::sync->nextAt);
--    }
--    inform("Multi sync scheduled at %lu and repeats %lu\n",  when(),
--           MultiIface::sync->nextRepeat);
+-    // The new multi interface may require earlier start of the
+-    // synchronisation.
+-    assert(scheduled() == true);
+-    if (start_tick < when())
+-        reschedule(start_tick);
+-    // The new multi interface may require more frequent synchronisation.
+-    if (repeat == 0)
+-        panic("Multi synchronisation period must be greater than zero");
+-    if (repeat < repeat_tick)
+-        repeat = repeat_tick;
 -}
 -
 -void
@@ -3031,6 +2976,18 @@ deleted file mode 100644
 -     * Note that this is a global event so this process method will be called
 -     * by only exactly one thread.
 -     */
+-    // if we are draining the system then we must not start a periodic sync (as
+-    // it is not sure that all peer gem5 will reach this tick before taking
+-    // the checkpoint).
+-    if (isDraining == true) {
+-        assert(interrupted == false);
+-        interrupted = true;
+-        DPRINTF(MultiEthernet,"MultiIface::SyncEvent::process() interrupted "
+-                "due to draining\n");
+-        return;
+-    }
+-    if (interrupted == false)
+-        scheduledAt = curTick();
 -    /*
 -     * We hold the eventq lock at this point but the receiver thread may
 -     * need the lock to schedule new recv events while waiting for the
@@ -3038,210 +2995,76 @@ deleted file mode 100644
 -     * Note that the other simulation threads also release their eventq
 -     * locks while waiting for us due to the global event semantics.
 -     */
--    {
--        EventQueue::ScopedRelease sr(curEventQueue());
--        // we do a global sync here that is supposed to happen at the same
--        // tick in all gem5 peers
--        MultiIface::sync->run(true);
--        // global sync completed
--    }
--    if (MultiIface::sync->doCkpt)
--        exitSimLoop("checkpoint");
--    if (MultiIface::sync->doExit)
--        exitSimLoop("exit request from gem5 peers");
--
--    // schedule the next periodic sync
--    repeat = MultiIface::sync->nextRepeat;
--    schedule(curTick() + repeat);
--}
--
--void
--MultiIface::RecvScheduler::init(Event *recv_done, Tick link_delay)
--{
--    // This is called from the receiver thread when it starts running. The new
--    // receiver thread shares the event queue with the simulation thread
--    // (associated with the simulated Ethernet link).
--    curEventQueue(eventManager->eventQueue());
--
--    recvDone = recv_done;
--    linkDelay = link_delay;
--}
--
--Tick
--MultiIface::RecvScheduler::calcReceiveTick(Tick send_tick,
--                                           Tick send_delay,
--                                           Tick prev_recv_tick)
--{
--    Tick recv_tick = send_tick + send_delay + linkDelay;
--    // sanity check (we need atleast a send delay long window)
--    assert(recv_tick >= prev_recv_tick + send_delay);
--    panic_if(prev_recv_tick + send_delay > recv_tick,
--             "Receive window is smaller than send delay");
--    panic_if(recv_tick <= curTick(),
--             "Simulators out of sync - missed packet receive by %llu ticks"
--             "(rev_recv_tick: %lu send_tick: %lu send_delay: %lu "
--             "linkDelay: %lu )",
--             curTick() - recv_tick, prev_recv_tick, send_tick, send_delay,
--             linkDelay);
--
--    return recv_tick;
--}
--
--void
--MultiIface::RecvScheduler::resumeRecvTicks()
--{
--    // Schedule pending packets asap in case link speed/delay changed when
--    // resuming from the checkpoint.
--    // This may be done during unserialize except that curTick() is unknown.
--    std::vector<Desc> v;
--    while (!descQueue.empty()) {
--        Desc d = descQueue.front();
--        descQueue.pop();
--        d.sendTick = curTick();
--        d.sendDelay = d.packet->size(); // assume 1 tick/byte max link speed
--        v.push_back(d);
--    }
--
--    for (auto &d : v)
--        descQueue.push(d);
--
--    if (recvDone->scheduled()) {
--        assert(!descQueue.empty());
--        eventManager->reschedule(recvDone, curTick());
--    } else {
--        assert(descQueue.empty() && v.empty());
--    }
--}
--
--void
--MultiIface::RecvScheduler::pushPacket(EthPacketPtr new_packet,
--                                      Tick send_tick,
--                                      Tick send_delay)
--{
--    // Note : this is called from the receiver thread
--    curEventQueue()->lock();
--    Tick recv_tick = calcReceiveTick(send_tick, send_delay, prevRecvTick);
--
--    DPRINTF(MultiEthernetPkt, "MultiIface::recvScheduler::pushPacket "
--            "send_tick:%llu send_delay:%llu link_delay:%llu recv_tick:%llu\n",
--            send_tick, send_delay, linkDelay, recv_tick);
--    // Every packet must be sent and arrive in the same quantum
--    assert(send_tick > master->syncEvent->when() -
--           master->syncEvent->repeat);
--    // No packet may be scheduled for receive in the arrivel quantum
--    assert(send_tick + send_delay + linkDelay > master->syncEvent->when());
--
--    // Now we are about to schedule a recvDone event for the new data packet.
--    // We use the same recvDone object for all incoming data packets. Packet
--    // descriptors are saved in the ordered queue. The currently scheduled
--    // packet is always on the top of the queue.
--    // NOTE:  we use the event queue lock to protect the receive desc queue,
--    // too, which is accessed both by the receiver thread and the simulation
--    // thread.
--    descQueue.emplace(new_packet, send_tick, send_delay);
--    if (descQueue.size() == 1) {
--        assert(!recvDone->scheduled());
--        eventManager->schedule(recvDone, recv_tick);
--    } else {
--        assert(recvDone->scheduled());
--        panic_if(descQueue.front().sendTick + descQueue.front().sendDelay > recv_tick,
--                 "Out of order packet received (recv_tick: %lu top(): %lu\n",
--                 recv_tick, descQueue.front().sendTick + descQueue.front().sendDelay);
--    }
 -    curEventQueue()->unlock();
+-    // we do a global sync here
+-    interrupted = !MultiIface::sync->run(SyncTrigger::periodic, scheduledAt);
+-    // Global sync completed or got interrupted.
+-    // we are expected to exit with the eventq lock held
+-    curEventQueue()->lock();
+-    // schedule the next global sync event if this one completed. Otherwise
+-    // (i.e. this one was interrupted by a checkpoint request), we will 
+-    // reschedule this one after the draining is complete.
+-    if (!interrupted)
+-        schedule(scheduledAt + repeat);
 -}
 -
--EthPacketPtr
--MultiIface::RecvScheduler::popPacket()
+-void MultiIface::SyncEvent::resume()
 -{
--    // Note : this is called from the simulation thread when a receive done
--    // event is being processed for the link. We assume that the thread holds
--    // the event queue queue lock when this is called!
--    EthPacketPtr next_packet = descQueue.front().packet;
--    descQueue.pop();
--
--    if (descQueue.size() > 0) {
--        Tick recv_tick = calcReceiveTick(descQueue.front().sendTick,
--                                         descQueue.front().sendDelay,
--                                         curTick());
--        eventManager->schedule(recvDone, recv_tick);
+-    Tick sync_tick;
+-    assert(!scheduled());
+-    if (interrupted) {
+-        assert(curTick() >= scheduledAt);
+-        // We have to complete the interrupted periodic sync asap.
+-        // Note that this sync might be interrupted now again with a checkpoint
+-        // request from a peer gem5...
+-        sync_tick = curTick();
+-        schedule(sync_tick);
+-    } else {
+-        // So we completed the last periodic sync, let's find  out the tick for
+-        // next one
+-        assert(curTick() > scheduledAt);
+-        sync_tick = scheduledAt + repeat;
+-        if (sync_tick < curTick())
+-            panic("Cannot resume periodic synchronisation");
+-        schedule(sync_tick);
 -    }
--    prevRecvTick = curTick();
--    return next_packet;
+-    DPRINTF(MultiEthernet,
+-            "MultiIface::SyncEvent periodic sync resumed at %lld "
+-            "(curTick:%lld)\n", sync_tick, curTick());
 -}
 -
--void
--MultiIface::RecvScheduler::Desc::serialize(CheckpointOut &cp) const
+-void MultiIface::SyncEvent::serialize(const std::string &base,
+-                                      CheckpointOut &cp) const
 -{
--        SERIALIZE_SCALAR(sendTick);
--        SERIALIZE_SCALAR(sendDelay);
--        packet->serialize("rxPacket", cp);
+-    // Save the periodic multi sync schedule information
+-    paramOut(cp, base + ".periodicSyncRepeat", repeat);
+-    paramOut(cp, base + ".periodicSyncInterrupted", interrupted);
+-    paramOut(cp, base + ".periodicSyncAt", scheduledAt);
 -}
 -
--void
--MultiIface::RecvScheduler::Desc::unserialize(CheckpointIn &cp)
+-void MultiIface::SyncEvent::unserialize(const std::string &base,
+-                                        CheckpointIn &cp)
 -{
--        UNSERIALIZE_SCALAR(sendTick);
--        UNSERIALIZE_SCALAR(sendDelay);
--        packet = std::make_shared<EthPacketData>(16384);
--        packet->unserialize("rxPacket", cp);
--}
--
--void
--MultiIface::RecvScheduler::serialize(CheckpointOut &cp) const
--{
--    SERIALIZE_SCALAR(prevRecvTick);
--    // serialize the receive desc queue
--    std::queue<Desc> tmp_queue(descQueue);
--    unsigned n_desc_queue = descQueue.size();
--    assert(tmp_queue.size() == descQueue.size());
--    SERIALIZE_SCALAR(n_desc_queue);
--    for (int i = 0; i < n_desc_queue; i++) {
--        tmp_queue.front().serializeSection(cp, csprintf("rxDesc_%d", i));
--        tmp_queue.pop();
--    }
--    assert(tmp_queue.empty());
--}
--
--void
--MultiIface::RecvScheduler::unserialize(CheckpointIn &cp)
--{
--    assert(descQueue.size() == 0);
--    assert(recvDone->scheduled() == false);
--
--    UNSERIALIZE_SCALAR(prevRecvTick);
--    // unserialize the receive desc queue
--    unsigned n_desc_queue;
--    UNSERIALIZE_SCALAR(n_desc_queue);
--    for (int i = 0; i < n_desc_queue; i++) {
--        Desc recv_desc;
--        recv_desc.unserializeSection(cp, csprintf("rxDesc_%d", i));
--        descQueue.push(recv_desc);
--    }
+-    paramIn(cp, base + ".periodicSyncRepeat", repeat);
+-    paramIn(cp, base + ".periodicSyncInterrupted", interrupted);
+-    paramIn(cp, base + ".periodicSyncAt", scheduledAt);
 -}
 -
 -MultiIface::MultiIface(unsigned multi_rank,
--                       unsigned multi_size,
 -                       Tick sync_start,
 -                       Tick sync_repeat,
--                       EventManager *em,
--                       bool is_switch, int num_nodes) :
+-                       EventManager *em) :
 -    syncStart(sync_start), syncRepeat(sync_repeat),
--    recvThread(nullptr), recvScheduler(em),
--    rank(multi_rank), size(multi_size)
+-    recvThread(nullptr), eventManager(em), recvDone(nullptr),
+-    scheduledRecvPacket(nullptr), linkDelay(0), rank(multi_rank)
 -{
 -    DPRINTF(MultiEthernet, "MultiIface() ctor rank:%d\n",multi_rank);
--    isMaster = false;
 -    if (master == nullptr) {
 -        assert(sync == nullptr);
 -        assert(syncEvent == nullptr);
--        if (is_switch)
--            sync = new SyncSwitch(num_nodes);
--        else
--            sync = new SyncNode();
+-        sync = new Sync();
 -        syncEvent = new SyncEvent();
 -        master = this;
--        isMaster = true;
 -    }
 -}
 -
@@ -3254,79 +3077,167 @@ deleted file mode 100644
 -        delete syncEvent;
 -        assert(sync);
 -        delete sync;
--        master = nullptr;
 -    }
 -}
 -
 -void
 -MultiIface::packetOut(EthPacketPtr pkt, Tick send_delay)
 -{
--    Header header;
+-    MultiHeaderPkt::Header header_pkt;
+-    unsigned address_length = MultiHeaderPkt::maxAddressLength();
 -
 -    // Prepare a multi header packet for the Ethernet packet we want to
 -    // send out.
--    header.msgType = MsgType::dataDescriptor;
--    header.sendTick  = curTick();
--    header.sendDelay = send_delay;
+-    header_pkt.msgType = MsgType::dataDescriptor;
+-    header_pkt.sendTick  = curTick();
+-    header_pkt.sendDelay = send_delay;
 -
--    header.dataPacketLength = pkt->size();
+-    // Store also the source and destination addresses.
+-    pkt->packAddress(header_pkt.srcAddress, header_pkt.dstAddress,
+-                     address_length);
 -
--    // Send out the packet and the meta info.
--    sendPacket(header, pkt);
+-    header_pkt.dataPacketLength = pkt->size();
 -
+-    // Send out the multi hedare packet followed by the Ethernet packet.
+-    sendRaw(&header_pkt, sizeof(header_pkt), header_pkt.dstAddress);
+-    sendRaw(pkt->data, pkt->size(), header_pkt.dstAddress);
 -    DPRINTF(MultiEthernetPkt,
--            "MultiIface::sendDataPacket() done size:%d send_delay:%llu\n",
--            pkt->size(), send_delay);
+-            "MultiIface::sendDataPacket() done size:%d send_delay:%llu "
+-            "src:0x%02x%02x%02x%02x%02x%02x "
+-            "dst:0x%02x%02x%02x%02x%02x%02x\n",
+-            pkt->size(), send_delay,
+-            header_pkt.srcAddress[0], header_pkt.srcAddress[1],
+-            header_pkt.srcAddress[2], header_pkt.srcAddress[3],
+-            header_pkt.srcAddress[4], header_pkt.srcAddress[5],
+-            header_pkt.dstAddress[0], header_pkt.dstAddress[1],
+-            header_pkt.dstAddress[2], header_pkt.dstAddress[3],
+-            header_pkt.dstAddress[4], header_pkt.dstAddress[5]);
+-}
+-
+-bool
+-MultiIface::recvHeader(MultiHeaderPkt::Header &header_pkt)
+-{
+-    // Blocking receive of an incoming multi header packet.
+-    return recvRaw((void *)&header_pkt, sizeof(header_pkt));
 -}
 -
 -void
--MultiIface::recvThreadFunc(Event *recv_done, Tick link_delay)
+-MultiIface::recvData(const MultiHeaderPkt::Header &header_pkt)
+-{
+-    // We are here beacuse a header packet has been received implying
+-    // that an Ethernet (data) packet is coming in next.
+-    assert(header_pkt.msgType == MsgType::dataDescriptor);
+-    // Allocate storage for the incoming Ethernet packet.
+-    EthPacketPtr new_packet(new EthPacketData(header_pkt.dataPacketLength));
+-    // Now execute the blocking receive and store the incoming data directly
+-    // in the new EthPacketData object.
+-    if (! recvRaw((void *)(new_packet->data), header_pkt.dataPacketLength))
+-        panic("Missing data packet");
+-
+-    new_packet->length = header_pkt.dataPacketLength;
+-    // Grab the event queue lock to schedule a new receive event for the
+-    // data packet.
+-    curEventQueue()->lock();
+-    // Compute the receive tick. It includes the send delay and the
+-    // simulated link delay.
+-    Tick recv_tick = header_pkt.sendTick + header_pkt.sendDelay + linkDelay;
+-    DPRINTF(MultiEthernetPkt, "MultiIface::recvThread() packet receive, "
+-            "send_tick:%llu send_delay:%llu link_delay:%llu recv_tick:%llu\n",
+-            header_pkt.sendTick, header_pkt.sendDelay, linkDelay, recv_tick);
+-
+-    if (recv_tick <= curTick()) {
+-        panic("Simulators out of sync - missed packet receive by %llu ticks",
+-              curTick() - recv_tick);
+-    }
+-    // Now we are about to schedule a recvDone event for the new data packet.
+-    // We use the same recvDone object for all incoming data packets. If
+-    // that is already scheduled - i.e. a receive event for a previous
+-    // data packet is already pending - then we have to check whether the
+-    // receive tick for the new packet is earlier than that of the currently
+-    // pending event. Packets may arrive out-of-order with respect to
+-    // simulated receive time. If that is the case, we need to re-schedule the
+-    // recvDone event for the new packet. Otherwise, we save the packet
+-    // pointer and the recv tick for the new packet in the recvQueue. See
+-    // the implementation of the packetIn() method for comments on how this
+-    // information is retrieved from the recvQueue by the simulation thread.
+-    if (!recvDone->scheduled()) {
+-        assert(recvQueue.size() == 0);
+-        assert(scheduledRecvPacket == nullptr);
+-        scheduledRecvPacket = new_packet;
+-        eventManager->schedule(recvDone, recv_tick);
+-    } else if (recvDone->when() > recv_tick) {
+-        recvQueue.emplace(scheduledRecvPacket, recvDone->when());
+-        eventManager->reschedule(recvDone, recv_tick);
+-        scheduledRecvPacket = new_packet;
+-    } else {
+-        recvQueue.emplace(new_packet, recv_tick);
+-    }
+-    curEventQueue()->unlock();
+-}
+-
+-void
+-MultiIface::recvThreadFunc()
 -{
 -    EthPacketPtr new_packet;
 -    MultiHeaderPkt::Header header;
 -
--    // Initialize receive scheduler parameters
--    recvScheduler.init(recv_done, link_delay);
--
+-    // The new receiver thread shares the event queue with the simulation
+-    // thread (associated with the simulated Ethernet link).
+-    curEventQueue(eventManager->eventQueue());
 -    // Main loop to wait for and process any incoming message.
 -    for (;;) {
 -        // recvHeader() blocks until the next multi header packet comes in.
 -        if (!recvHeader(header)) {
 -            // We lost connection to the peer gem5 processes most likely
 -            // because one of them called m5 exit. So we stop here.
--            // Grab the eventq lock to stop the simulation thread
--            curEventQueue()->lock();
--            exit_message("info",
--                         0,
--                         "Message server closed connection, "
+-            exit_message("info", 0, "Message server closed connection, "
 -                         "simulation is exiting");
 -        }
--
 -        // We got a valid multi header packet, let's process it
 -        if (header.msgType == MsgType::dataDescriptor) {
--            recvPacket(header, new_packet);
--            recvScheduler.pushPacket(new_packet,
--                                     header.sendTick,
--                                     header.sendDelay);
+-            recvData(header);
 -        } else {
 -            // everything else must be synchronisation related command
--            sync->progress(header.sendTick,
--                           header.syncRepeat,
--                           header.needCkpt,
--                           header.needExit);
+-            sync->progress(header.msgType);
 -        }
 -    }
+-}
+-
+-EthPacketPtr
+-MultiIface::packetIn()
+-{
+-    // We are called within the process() method of the recvDone event. We
+-    // return the packet that triggered the current receive event.
+-    // If there is further packets in the recvQueue, we also have to schedule
+-    // the recvEvent for the next packet with the smallest receive tick.
+-    // The priority queue container ensures that smallest receive tick is
+-    // always on the top of the queue.
+-    assert(scheduledRecvPacket != nullptr);
+-    EthPacketPtr next_packet = scheduledRecvPacket;
+-
+-    if (! recvQueue.empty()) {
+-        eventManager->schedule(recvDone, recvQueue.top().second);
+-        scheduledRecvPacket = recvQueue.top().first;
+-        recvQueue.pop();
+-    } else {
+-        scheduledRecvPacket = nullptr;
+-    }
+-
+-    return next_packet;
 -}
 -
 -void
 -MultiIface::spawnRecvThread(Event *recv_done, Tick link_delay)
 -{
 -    assert(recvThread == nullptr);
+-    // all receive thread must be spawned before simulation starts
+-    assert(eventManager->eventQueue()->getCurTick() == 0);
 -
--    recvThread = new std::thread(&MultiIface::recvThreadFunc,
--                                 this,
--                                 recv_done,
--                                 link_delay);
+-    recvDone = recv_done;
+-    linkDelay = link_delay;
+-
+-    recvThread = new std::thread(&MultiIface::recvThreadFunc, this);
+-
 -    recvThreadsNum++;
 -}
 -
@@ -3336,49 +3247,87 @@ deleted file mode 100644
 -    DPRINTF(MultiEthernet,"MultiIFace::drain() called\n");
 -
 -    // This can be called multiple times in the same drain cycle.
+-    if (master == this) {
+-        syncEvent->isDraining = true;
+-    }
+-
 -    return DrainState::Drained;
 -}
 -
--void
--MultiIface::drainResume() {
+-void MultiIface::drainDone() {
 -    if (master == this) {
--        syncEvent->start();
+-        assert(syncEvent->isDraining == true);
+-        syncEvent->isDraining = false;
+-        // We need to resume the interrupted periodic sync here now that the
+-        // draining is done. If the last periodic sync completed before the
+-        // checkpoint then the next one is already scheduled.
+-        if (syncEvent->interrupted)
+-            syncEvent->resume();
 -    }
--    recvScheduler.resumeRecvTicks();
 -}
 -
--void
--MultiIface::serialize(CheckpointOut &cp) const
+-void MultiIface::serialize(const std::string &base, CheckpointOut &cp) const
 -{
 -    // Drain the multi interface before the checkpoint is taken. We cannot call
 -    // this as part of the normal drain cycle because this multi sync has to be
 -    // called exactly once after the system is fully drained.
--    sync->drainComplete();
+-    // Note that every peer will take a checkpoint but they may take it at
+-    // different ticks.
+-    // This sync request may interrupt an on-going periodic sync in some peers.
+-    sync->run(SyncTrigger::ckpt, curTick());
 -
--    recvScheduler.serializeSection(cp, "recvScheduler");
--    if (this == master) {
--        sync->serializeSection(cp, "Sync");
+-    // Save the periodic multi sync status
+-    syncEvent->serialize(base, cp);
+-
+-    unsigned n_rx_packets = recvQueue.size();
+-    if (scheduledRecvPacket != nullptr)
+-        n_rx_packets++;
+-
+-    paramOut(cp, base + ".nRxPackets", n_rx_packets);
+-
+-    if (n_rx_packets > 0) {
+-        assert(recvDone->scheduled());
+-        scheduledRecvPacket->serialize(base + ".rxPacket[0]", cp);
+-    }
+-
+-    for (unsigned i=1; i < n_rx_packets; i++)  {
+-        const RecvInfo recv_info = recvQueue.impl().at(i-1);
+-        recv_info.first->serialize(base + csprintf(".rxPacket[%d]", i), cp);
+-        Tick rx_tick = recv_info.second;
+-        paramOut(cp, base + csprintf(".rxTick[%d]", i), rx_tick);
 -    }
 -}
 -
--void
--MultiIface::unserialize(CheckpointIn &cp)
+-void MultiIface::unserialize(const std::string &base, CheckpointIn &cp)
 -{
--    recvScheduler.unserializeSection(cp, "recvScheduler");
--    if (this == master) {
--        sync->unserializeSection(cp, "Sync");
--  }
+-    assert(recvQueue.size() == 0);
+-    assert(scheduledRecvPacket == nullptr);
+-    assert(recvDone->scheduled() == false);
+-
+-    // restore periodic sync info
+-    syncEvent->unserialize(base, cp);
+-
+-    unsigned n_rx_packets;
+-    paramIn(cp, base + ".nRxPackets", n_rx_packets);
+-
+-    if (n_rx_packets > 0) {
+-        scheduledRecvPacket = std::make_shared<EthPacketData>(16384);
+-        scheduledRecvPacket->unserialize(base + ".rxPacket[0]", cp);
+-        // Note: receive event will be scheduled when the link is unserialized
+-    }
+-
+-    for (unsigned i=1; i < n_rx_packets; i++) {
+-        EthPacketPtr rx_packet = std::make_shared<EthPacketData>(16384);
+-        rx_packet->unserialize(base + csprintf(".rxPacket[%d]", i), cp);
+-        Tick rx_tick = 0;
+-        paramIn(cp, base + csprintf(".rxTick[%d]", i), rx_tick);
+-        assert(rx_tick > 0);
+-        recvQueue.emplace(rx_packet,rx_tick);
+-    }
 -}
 -
--void
--MultiIface::init()
+-void MultiIface::initRandom()
 -{
--    // Adjust the periodic sync start and interval. Different MultiIface
--    // might have different requirements. The singleton sync object
--    // will select the minimum values for both params.
--    assert(sync != nullptr);
--    sync->init(syncStart, syncRepeat);
--
 -    // Initialize the seed for random generator to avoid the same sequence
 -    // in all gem5 peer processes
 -    assert(master != nullptr);
@@ -3386,93 +3335,36 @@ deleted file mode 100644
 -        random_mt.init(5489 * (rank+1) + 257);
 -}
 -
--void
--MultiIface::startup()
+-void MultiIface::startPeriodicSync()
 -{
--    DPRINTF(MultiEthernet, "MultiIface::startup() started\n");
--    // If this run is a resume from a checkpoint than we schedule the first
--    // periodic sync in drainResume()
--    if (curTick() == 0 && this == master)
--        syncEvent->start();
+-    DPRINTF(MultiEthernet, "MultiIface:::initPeriodicSync started\n");
+-    // Do a global sync here to ensure that peer gem5 processes are around
+-    // (actually this may not be needed...)
+-    sync->run(SyncTrigger::atomic, curTick());
 -
--    DPRINTF(MultiEthernet, "MultiIface::startup() done\n");
--}
--
--bool
--MultiIface::readyToCkpt(Tick delay, Tick period)
--{
--    bool ret = true;
--    DPRINTF(MultiEthernet, "MultiIface::readyToCkpt() called, delay:%lu "
--            "period:%lu\n", delay, period);
--    if (master) {
--        if (delay == 0) {
--            inform("m5 checkpoint called with zero delay => triggering collaborative "
--                   "checkpoint\n");
--            sync->requestCkpt(ReqType::collective);
+-    // Start the periodic sync if it is a fresh simulation from scratch
+-    if (curTick() == 0) {
+-        if (this == master) {
+-        syncEvent->start(syncStart, syncRepeat);
+-        inform("Multi synchronisation activated: start at %lld, "
+-               "repeat at every %lld ticks.\n",
+-               syncStart, syncRepeat);
 -        } else {
--            inform("m5 checkpoint called with non-zero delay => triggering immediate "
--                   "checkpoint (at the next sync)\n");
--            sync->requestCkpt(ReqType::immediate);
+-            // In case another multiIface object requires different schedule
+-            // for periodic sync than the master does.
+-            syncEvent->adjust(syncStart, syncRepeat);
 -        }
--        if (period != 0)
--            inform("Non-zero period for m5_ckpt is ignored in "
--                   "distributed gem5 runs\n");
--        ret = false;
--    }
--    return ret;
--}
--
--bool
--MultiIface::readyToExit(Tick delay)
--{
--    bool ret = true;
--    DPRINTF(MultiEthernet, "MultiIface::readyToExit() called, delay:%lu\n",
--            delay);
--    if (master) {
--        if (delay == 0) {
--            inform("m5 exit called with zero delay => triggering collaborative "
--                   "exit\n");
--            sync->requestExit(ReqType::collective);
--        } else {
--            inform("m5 exit called with non-zero delay => triggering immediate "
--                   "exit (at the next sync)\n");
--            sync->requestExit(ReqType::immediate);
--        }
--        ret = false;
--    }
--    return ret;
--}
--
--uint64_t
--MultiIface::rankParam()
--{
--    uint64_t val;
--    if (master) {
--        val = master->rank;
 -    } else {
--        warn("Multi-rank parameter is queried in single gem5 simulation.");
--        val = 0;
+-        // Schedule the next periodic sync if resuming from a checkpoint
+-        if (this == master)
+-            syncEvent->resume();
 -    }
--    return val;
+-    DPRINTF(MultiEthernet, "MultiIface::initPeriodicSync done\n");
 -}
--
--uint64_t
--MultiIface::sizeParam()
--{
--    uint64_t val;
--    if (master) {
--        val = master->size;
--    } else {
--        warn("Multi-size parameter is queried in single gem5 simulation.");
--        val = 1;
--    }
--    return val;
--}
-diff --git a/src/dev/multi_iface.hh b/src/dev/multi_iface.hh
-deleted file mode 100644
---- a/src/dev/multi_iface.hh
-+++ /dev/null
-@@ -1,564 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_iface.hh
+--- a/src/dev/multi_iface.hh	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,492 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -3564,35 +3456,78 @@ deleted file mode 100644
 -#include "sim/core.hh"
 -#include "sim/drain.hh"
 -#include "sim/global_event.hh"
--#include "sim/serialize.hh"
 -
 -class EventManager;
 -
 -/**
 - * The interface class to talk to peer gem5 processes.
 - */
--class MultiIface : public Drainable, public Serializable
+-class MultiIface : public Drainable
 -{
 -  public:
--    typedef MultiHeaderPkt::Header Header;
--
--  protected:
--    typedef MultiHeaderPkt::MsgType MsgType;
--    typedef MultiHeaderPkt::ReqType ReqType;
+-    /*!
+-     * The possible reasons a multi sync among gem5 peers is needed for.
+-     */
+-    enum
+-    class SyncTrigger {
+-        periodic, /*!< Regular periodic sync. This can be interrupted by a
+-                   checkpoint sync request */
+-        ckpt,     /*!< sync before taking a checkpoint */
+-        atomic    /*!< sync that cannot be interrupted (e.g. sync at startup) */
+-    };
 -
 -  private:
--    class SyncEvent;
+-    typedef MultiHeaderPkt::MsgType MsgType;
+-
+-    /** Sync State-Machine
+-     \dot
+-     digraph Sync {
+-     node [shape=box, fontsize=10];
+-     idle -> busy
+-     [ label="new trigger\n by run()" fontsize=8 ];
+-     busy -> busy
+-     [ label="new message by progress():\n(msg == SyncAck &&\nwaitNum > 1) || \n(msg==CkptSyncReq &&\ntrigger == ckpt)" fontsize=8 ];
+-     busy -> idle
+-     [ label="new message by progress():\n(msg == SyncAck &&\nwaitNum == 1)" fontsize=8 ];
+-     busy -> interrupted
+-     [ label="new message by progress():\n(msg == CkptSyncReq &&\ntrigger == periodic)" fontsize=8 ];
+-     idle -> asyncCkpt
+-     [ label="new message by progress():\nmsg == CkptSyncReq" fontsize=8 ];
+-     asyncCkpt -> asyncCkpt
+-     [ label="new message by progress():\nmsg == CkptSyncReq" fontsize=8 ];
+-     asyncCkpt -> busy
+-     [ label="new trigger by run():\ntrigger == ckpt" fontsize=8 ];
+-     asyncCkpt -> idle
+-     [ label="new trigger by run():\n(trigger == periodic &&\nwaitNum == 0) " fontsize=8 ];
+-     asyncCkpt -> interrupted
+-     [ label="new trigger by run():\n(trigger == periodic &&\nwaitNum > 0) " fontsize=8 ];
+-     interrupted -> interrupted
+-     [ label="new message by progress():\n(msg == CkptSyncReq &&\nwaitNum > 1)" fontsize=8 ];
+-     interrupted -> idle
+-     [ label="new message by progress():\n(msg == CkptSyncReq &&\nwaitNum == 1)" fontsize=8 ];
+-     }
+-     \enddot
+-     */
 -    /** @class Sync
 -     * This class implements global sync operations among gem5 peer processes.
 -     *
 -     * @note This class is used as a singleton object (shared by all MultiIface
 -     * objects).
 -     */
--    class Sync : public Serializable
+-    class Sync
 -    {
--      protected:
+-      private:
+-        /*!
+-         * Internal state of the sync singleton object.
+-         */
+-        enum class SyncState {
+-            busy,        /*!< There is an on-going sync. */
+-            interrupted, /*!< An on-going periodic sync was interrupted. */
+-            asyncCkpt,   /*!< A checkpoint (sim_exit) is already scheduled */
+-            idle         /*!< There is no active sync. */
+-        };
 -        /**
--         * The lock to protect access to the Sync object.
+-         * The lock to protect access to the MultiSync object.
 -         */
 -        std::mutex lock;
 -        /**
@@ -3607,123 +3542,44 @@ deleted file mode 100644
 -         */
 -        unsigned waitNum;
 -        /**
--         * Flag is set if exit is permitted upon sync completion
+-         * The trigger for the most recent sync.
 -         */
--        bool doExit;
+-        SyncTrigger trigger;
 -        /**
--         * Flag is set if taking a ckpt is permitted upon sync completion
+-         * Map sync triggers to request messages.
 -         */
--        bool doCkpt;
--        /**
--         * The repeat value for the next periodic sync
--         */
--        Tick nextRepeat;
--        /**
--         * Tick for the very first periodic sync
--         */
--        Tick firstAt;
--        /**
--         * Tick for the next periodic sync (if the event is not scheduled yet)
--         */
--        Tick nextAt;
+-        std::array<MsgType, 3> triggerToMsg = {{
+-                MsgType::cmdPeriodicSyncReq,
+-                MsgType::cmdCkptSyncReq,
+-                MsgType::cmdAtomicSyncReq
+-            }};
 -
--        friend class SyncEvent;
+-        /**
+-         * Current sync state.
+-         */
+-        SyncState state;
 -
 -      public:
--        /**
--         * Initialize periodic sync params.
--         *
--         * @param start Start tick for multi synchronisation
--         * @param repeat Frequency of multi synchronisation
--         *
--         */
--        void init(Tick start, Tick repeat);
 -        /**
 -         *  Core method to perform a full multi sync.
+-         *
+-         * @param t Sync trigger.
+-         * @param sync_tick The tick the sync was expected to happen at.
+-         * @return true if the sync completed, false if it was interrupted.
+-         *
+-         * @note In case of an interrupted periodic sync, sync_tick can be less
+-         * than curTick() when we resume (i.e. re-run) it
 -         */
--        virtual void run(bool same_tick) = 0;
+-        bool run(SyncTrigger t, Tick sync_tick);
 -        /**
--         * Callback when the receiver thread gets a sync ack message.
+-         * Callback when the receiver thread gets a sync message.
 -         */
--        virtual void progress(Tick send_tick,
--                              Tick next_repeat,
--                              ReqType do_ckpt,
--                              ReqType do_exit) = 0;
+-        void progress(MsgType m);
 -
--        virtual void requestCkpt(ReqType req) = 0;
--        virtual void requestExit(ReqType req) = 0;
--
--        void drainComplete();
--
--        virtual void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE = 0;
--        virtual void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE = 0;
+-        Sync() : waitNum(0), state(SyncState::idle) {}
+-        ~Sync() {}
 -    };
 -
--    class SyncNode: public Sync
--    {
--      private:
--        /**
--         * Exit requested
--         */
--        ReqType needExit;
--        /**
--         * Ckpt requested
--         */
--        ReqType needCkpt;
--
--      public:
--
--        SyncNode();
--        ~SyncNode() {}
--        void run(bool same_tick) M5_ATTR_OVERRIDE;
--        void progress(Tick max_req_tick,
--                      Tick next_repeat,
--                      ReqType do_ckpt,
--                      ReqType do_exit) M5_ATTR_OVERRIDE;
--
--        void requestCkpt(ReqType req) M5_ATTR_OVERRIDE;
--        void requestExit(ReqType req) M5_ATTR_OVERRIDE;
--
--        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
--    };
--
--    class SyncSwitch: public Sync
--    {
--      private:
--        /**
--         * Counter for recording exit requests
--         */
--        unsigned numExitReq;
--        /**
--         * Counter for recording ckpt requests
--         */
--        unsigned numCkptReq;
--        /**
--         *  Number of connected simulated nodes
--         */
--        unsigned numNodes;
--
--      public:
--        SyncSwitch(int num_nodes);
--        ~SyncSwitch() {}
--
--        void run(bool same_tick) M5_ATTR_OVERRIDE;
--        void progress(Tick max_req_tick,
--                      Tick next_repeat,
--                      ReqType do_ckpt,
--                      ReqType do_exit) M5_ATTR_OVERRIDE;
--
--        void requestCkpt(ReqType) M5_ATTR_OVERRIDE {
--            panic("Switch requested checkpoint");
--        }
--        void requestExit(ReqType) M5_ATTR_OVERRIDE {
--            panic("Switch requested exit");
--        }
--
--        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
--    };
 -
 -    /**
 -     * The global event to schedule peridic multi sync. It is used as a
@@ -3741,144 +3597,106 @@ deleted file mode 100644
 -    {
 -      public:
 -        /**
--         * Only the firstly instantiated MultiIface object will
+-         * Flag to indicate that the most recent periodic sync was interrupted
+-         * (by a checkpoint request).
+-         */
+-        bool interrupted;
+-        /**
+-         * The tick when the most recent periodic synchronisation was scheduled
+-         * at.
+-         */
+-        Tick scheduledAt;
+-        /**
+-         * Flag to indicate an on-going drain cycle.
+-         */
+-         bool isDraining;
+-
+-      public:
+-        /**
+-         * Only the firstly instanstiated MultiIface object will
 -         * call this constructor.
 -         */
--        SyncEvent() : GlobalSyncEvent(Sim_Exit_Pri, 0) {}
+-        SyncEvent() : GlobalSyncEvent(Default_Pri, 0), interrupted(false),
+-                      scheduledAt(0), isDraining(false) {}
 -
--        ~SyncEvent() {}
+-        ~SyncEvent() { assert (scheduled() == false); }
 -        /**
 -         * Schedule the first periodic sync event.
+-         *
+-         * @param start Start tick for multi synchronisation
+-         * @param repeat Frequency of multi synchronisation
+-         *
 -         */
--        void start();
+-        void start(Tick start, Tick repeat);
+-        /**
+-         * Reschedule (if necessary) the periodic sync event.
+-         *
+-         * @param start Start tick for multi synchronisation
+-         * @param repeat Frequency of multi synchronisation
+-         *
+-         * @note Useful if we have multiple MultiIface objects with
+-         * different 'start' and 'repeat' values for global sync.
+-         */
+-        void adjust(Tick start, Tick repeat);
 -        /**
 -         * This is a global event so process() will be called by each
 -         * simulation threads. (See further comments in the .cc file.)
 -         */
 -        void process() M5_ATTR_OVERRIDE;
+-        /**
+-         * Schedule periodic sync when resuming from a checkpoint.
+-         */
+-        void resume();
+-
+-        void serialize(const std::string &base, CheckpointOut &cp) const;
+-        void unserialize(const std::string &base, CheckpointIn &cp);
 -    };
+-
 -    /**
--     * Class to encapsulate information about data packets received.
--
--     * @note The main purpose of the class to take care of scheduling receive
--     * done events for the simulated network link and store incoming packets
--     * until they can be received by the simulated network link.
+-     * The receive thread needs to store the packet pointer and the computed
+-     * receive tick for each incoming data packet. This information is used
+-     * by the simulation thread when it processes the corresponding receive
+-     * event. (See more comments at the implemetation of the recvThreadFunc()
+-     * and RecvPacketIn() methods.)
 -     */
--    class RecvScheduler : public Serializable
+-    typedef std::pair<EthPacketPtr, Tick> RecvInfo;
+-
+-    /**
+-     * Comparison predicate for RecvInfo, needed by the recvQueue.
+-     */
+-    struct RecvInfoCompare {
+-        bool operator()(const RecvInfo &lhs, const RecvInfo &rhs)
+-        {
+-            return lhs.second > rhs.second;
+-        }
+-    };
+-
+-    /**
+-     * Customized priority queue used to store incoming data packets info by
+-     * the receiver thread. We need to expose the underlying container to
+-     * enable iterator access for serializing.
+-     */
+-    class RecvQueue : public std::priority_queue<RecvInfo,
+-                                                 std::vector<RecvInfo>,
+-                                                 RecvInfoCompare>
 -    {
--      private:
--        /**
--         * Received packet descriptor. This information is used by the receive
--         * thread to schedule receive events and by the simulation thread to
--         * process those events.
--         */
--        struct Desc : public Serializable {
--            EthPacketPtr packet;
--            Tick sendTick;
--            Tick sendDelay;
--
--            Desc() : sendTick(0), sendDelay(0) {}
--            Desc(EthPacketPtr p, Tick s, Tick d) :
--                packet(p), sendTick(s), sendDelay(d) {}
--            Desc(const Desc &d) :
--                packet(d.packet), sendTick(d.sendTick), sendDelay(d.sendDelay) {}
--
--            void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--            void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
--        };
--        /**
--         * The queue to store the receive descriptors.
--         */
--        std::queue<Desc> descQueue;
--        /**
--         * The tick when the most recent receive event was processed.
--         *
--         * @note This information is necessary to simulate possible receiver
--         * link contention when calculating the receive tick for the next
--         * incoming data packet (see the calcReceiveTick() method)
--         */
--        Tick prevRecvTick;
--        /**
--         * The receive done event for the simulated Ethernet link.
--         *
--         * @note This object is constructed by the simulated network link. We
--         * schedule this object for each incoming data packet.
--         */
--        Event *recvDone;
--        /**
--         * The link delay in ticks for the simulated Ethernet link.
--         *
--         * @note This value is used for calculating the receive ticks for an
--         * incoming data packets.
--         */
--        Tick linkDelay;
--        /**
--         * The event manager associated with the simulated Ethernet link.
--         *
--         * @note It is used to access the event queue for scheduling receive
--         * done events for the link.
--         */
--        EventManager *eventManager;
--        /**
--         * Calculate the tick to schedule the next receive done event.
--         *
--         * @param send_tick The tick the packet was sent.
--         * @param send_delay The simulated delay at the sender side.
--         * @param prev_recv_tick Tick when the last receive event was
--         * processed.
--         *
--         * @note This method tries to take into account possible receiver link
--         * contention and adjust receive tick for the incoming packets
--         * accordingly.
--         */
--        Tick calcReceiveTick(Tick send_tick,
--                             Tick send_delay,
--                             Tick prev_recv_tick);
--
--
 -      public:
--        /**
--         * Scheduler for the incoming data packets.
--         *
--         * @param em The event manager associated with the simulated Ethernet
--         * link.
--         */
--        RecvScheduler(EventManager *em) :
--            prevRecvTick(0), recvDone(nullptr), linkDelay(0),
--            eventManager(em) {}
+-        std::vector<RecvInfo> &impl() { return c; }
+-        const std::vector<RecvInfo> &impl() const { return c; }
+-    };
 -
--        /**
--         *  Initialize network link parameters.
--         *
--         * @note This method is called from the receiver thread (see
--         * recvThreadFunc()).
--         */
--        void init(Event *recv_done, Tick link_delay);
--        /**
--         * Fetch the next packet that is to be received by the simulated network
--         * link.
--         *
--         * @note This method is called from the process() method of the receive
--         * done event associated with the network link.
--         */
--        EthPacketPtr popPacket();
--        /**
--         * Push a newly arrived packet into the desc queue.
--         */
--        void pushPacket(EthPacketPtr new_packet,
--                        Tick send_tick,
--                        Tick send_delay);
--
--        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
--        /**
--         * Adjust receive ticks for pending packets when resuming from a
--         * checkpoint
--         *
--         * @note Link speed and delay parameters may change at resume.
--         */
--        void resumeRecvTicks();
--  };
+-    /*
+-     * The priority queue to store RecvInfo items ordered by receive ticks.
+-     */
+-    RecvQueue recvQueue;
+-    /**
+-     * The singleton Sync object to perform multi synchronisation.
+-     */
+-    static Sync *sync;
+-    /**
+-     * The singleton SyncEvent object to schedule periodic multi sync.
+-     */
+-    static SyncEvent *syncEvent;
 -    /**
 -     * Tick to schedule the first multi sync event.
 -     * This is just as optimization : we do not need any multi sync
@@ -3895,23 +3713,31 @@ deleted file mode 100644
 -     */
 -    std::thread *recvThread;
 -    /**
--     * Meta information about data packets received.
+-     * The event manager associated with the MultiIface object.
 -     */
--    RecvScheduler recvScheduler;
+-    EventManager *eventManager;
 -
--  protected:
+-    /**
+-     * The receive done event for the simulated Ethernet link.
+-     * It is scheduled by the receiver thread for each incoming data
+-     * packet.
+-     */
+-    Event *recvDone;
+-
+-    /**
+-     * The packet that belongs to the currently scheduled recvDone event.
+-     */
+-    EthPacketPtr scheduledRecvPacket;
+-
+-    /**
+-     * The link delay in ticks for the simulated Ethernet link.
+-     */
+-    Tick linkDelay;
+-
 -    /**
 -     * The rank of this process among the gem5 peers.
 -     */
 -    unsigned rank;
--    /**
--     * The number of gem5 processes comprising this multi simulation.
--     */
--    unsigned size;
--
--    bool isMaster;
--
--  private:
 -    /**
 -     * Total number of receiver threads (in this gem5 process).
 -     * During the simulation it should be constant and equal to the
@@ -3920,49 +3746,57 @@ deleted file mode 100644
 -     */
 -    static unsigned recvThreadsNum;
 -    /**
--     * The singleton Sync object to perform multi synchronisation.
--     */
--    static Sync *sync;
--    /**
--     * The singleton SyncEvent object to schedule periodic multi sync.
--     */
--    static SyncEvent *syncEvent;
--    /**
 -     * The very first MultiIface object created becomes the master. We need
 -     * a master to co-ordinate the global synchronisation.
 -     */
 -    static MultiIface *master;
 -
--  private:
+-  protected:
 -    /**
--     * Send out a data packet to the remote end.
--     * @param header Meta info about the packet (which needs to be transferred
--     * to the destination alongside the packet).
--     * @param packet Pointer to the packet to send.
+-     * Low level generic send routine.
+-     * @param buf buffer that holds the data to send out
+-     * @param length number of bytes to send
+-     * @param dest_addr address of the target (simulated NIC). This may be
+-     * used by a subclass for optimization (e.g. optimize broadcast)
 -     */
--    virtual void sendPacket(const Header &header, const EthPacketPtr &packet) = 0;
+-    virtual void sendRaw(void *buf,
+-                         unsigned length,
+-                         const MultiHeaderPkt::AddressType dest_addr) = 0;
 -    /**
--     * Send out a control command to the remote end.
--     * @param header Meta info describing the command (e.g. sync request)
+-     * Low level generic receive routine.
+-     * @param buf the buffer to store the incoming message
+-     * @param length buffer size (in bytes)
 -     */
--    virtual void sendCmd(const Header &header) = 0;
+-    virtual bool recvRaw(void *buf, unsigned length) = 0;
 -    /**
--     * Receive a header (i.e. meta info describing a data packet or a control command)
--     * from the remote end.
--     * @param header The meta info structure to store the incoming header.
+-     * Low level request for synchronisation among gem5 processes. Only one
+-     * MultiIface object needs to call this (in each gem5 process) to trigger
+-     * a multi sync.
+-     *
+-     * @param sync_req Sync request command.
+-     * @param sync_tick The tick when sync is expected to happen in the sender.
 -     */
--    virtual bool recvHeader(Header &header) = 0;
--    /**
--     * Receive a packet from the remote end.
--     * @param header Meta info about the incoming packet (obtanied by a previous
--     * call to the recvHedaer() method).
--     * @param Pointer to packet received.
--     */
--    virtual void recvPacket(const Header &header, EthPacketPtr &packet) = 0;
+-    virtual void syncRaw(MsgType sync_req, Tick sync_tick) = 0;
 -    /**
 -     * The function executed by a receiver thread.
 -     */
--    void recvThreadFunc(Event *recv_done, Tick link_delay);
+-    void recvThreadFunc();
+-    /**
+-     * Receive a multi header packet. Called by the receiver thread.
+-     * @param header the structure to store the incoming header packet.
+-     * @return false if any error occured during the receive, true otherwise
+-     *
+-     * A header packet can carry a control command (e.g. 'barrier leave') or
+-     * information about a data packet that is following the header packet
+-     * back to back.
+-     */
+-    bool recvHeader(MultiHeaderPkt::Header &header);
+-    /**
+-     * Receive a data packet. Called by the receiver thread.
+-     * @param data_header The packet descriptor for the expected incoming data
+-     * packet.
+-     */
+-    void recvData(const MultiHeaderPkt::Header &data_header);
 -
 -  public:
 -
@@ -3974,12 +3808,9 @@ deleted file mode 100644
 -     * @param em The event manager associated with the simulated Ethernet link
 -     */
 -    MultiIface(unsigned multi_rank,
--               unsigned multi_size,
 -               Tick sync_start,
 -               Tick sync_repeat,
--               EventManager *em,
--               bool is_switch,
--               int num_nodes);
+-               EventManager *em);
 -
 -    virtual ~MultiIface();
 -    /**
@@ -3989,59 +3820,151 @@ deleted file mode 100644
 -     */
 -    void packetOut(EthPacketPtr pkt, Tick send_delay);
 -    /**
--     * Fetch the packet scheduled to be received next by the simulated
--     * network link.
--     *
--     * @note This method is called within the process() method of the link
--     * receive done event. It also schedules the next receive event if the
--     * receive queue is not empty.
+-     * Fetch the next packet from the receive queue.
 -     */
--    EthPacketPtr packetIn() { return recvScheduler.popPacket(); }
+-    EthPacketPtr packetIn();
+-
 -    /**
 -     * spawn the receiver thread.
 -     * @param recv_done The receive done event associated with the simulated
 -     * Ethernet link.
 -     * @param link_delay The link delay for the simulated Ethernet link.
 -     */
--    void spawnRecvThread(Event *recv_done, Tick link_delay);
+-    void spawnRecvThread(Event *recv_done,
+-                         Tick link_delay);
+-    /**
+-     * Initialize the random number generator with a different seed in each
+-     * peer gem5 process.
+-     */
+-    void initRandom();
 -
 -    DrainState drain() M5_ATTR_OVERRIDE;
--    void drainResume() M5_ATTR_OVERRIDE;
--    void init();
--    void startup();
 -
--    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
 -    /**
--     * Initiate the exit from the simulation.
--     *
--     * @return False if we are in multi mode and a collaborative exit is
--     * initiated, True otherwise.
+-     * Callback when draining is complete.
 -     */
--    static bool readyToExit(Tick delay);
+-    void drainDone();
+-
 -    /**
--     * Initiate taking a checkpoint
--     *
--     * @return False if we are in multi mode and a collaborative checkpoint is
--     * initiated, True otherwise.
+-     * Initialize the periodic synchronisation among peer gem5 processes.
 -     */
--    static bool readyToCkpt(Tick delay, Tick period);
--    /**
--     * Getter for the multi rank param.
--     */
--    static uint64_t rankParam();
--    /**
--     * Getter for the multi size param.
--     */
--    static uint64_t sizeParam();
-- };
+-    void startPeriodicSync();
+-
+-    void serialize(const std::string &base, CheckpointOut &cp) const;
+-    void unserialize(const std::string &base, CheckpointIn &cp);
+-
+-};
+-
 -
 -#endif
-diff --git a/src/dev/multi_packet.hh b/src/dev/multi_packet.hh
-deleted file mode 100644
---- a/src/dev/multi_packet.hh
-+++ /dev/null
-@@ -1,106 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_packet.cc
+--- a/src/dev/multi_packet.cc	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,100 +0,0 @@
+-/*
+- * Copyright (c) 2015 ARM Limited
+- * All rights reserved
+- *
+- * The license below extends only to copyright in the software and shall
+- * not be construed as granting a license to any other intellectual
+- * property including but not limited to intellectual property relating
+- * to a hardware implementation of the functionality of the software
+- * licensed hereunder.  You may use the software subject to the license
+- * terms below provided that you ensure that this notice is replicated
+- * unmodified and in its entirety in all distributions of the software,
+- * modified or unmodified, in source code or in binary form.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are
+- * met: redistributions of source code must retain the above copyright
+- * notice, this list of conditions and the following disclaimer;
+- * redistributions in binary form must reproduce the above copyright
+- * notice, this list of conditions and the following disclaimer in the
+- * documentation and/or other materials provided with the distribution;
+- * neither the name of the copyright holders nor the names of its
+- * contributors may be used to endorse or promote products derived from
+- * this software without specific prior written permission.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- *
+- * Authors: Gabor Dozsa
+- */
+-
+-/* @file
+- * MultiHeaderPkt class to encapsulate multi-gem5 header packets
+- *
+- */
+-
+-#include "dev/multi_packet.hh"
+-
+-#include <cstdint>
+-#include <cstring>
+-
+-#include "base/inet.hh"
+-
+-unsigned
+-MultiHeaderPkt::maxAddressLength()
+-{
+-    return sizeof(AddressType);
+-}
+-
+-void
+-MultiHeaderPkt::clearAddress(AddressType &addr)
+-{
+-    std::memset(addr, 0, sizeof(addr));
+-}
+-
+-bool
+-MultiHeaderPkt::isAddressEqual(const AddressType &addr1,
+-                               const AddressType &addr2)
+-{
+-    return (std::memcmp(addr1, addr2, sizeof(addr1)) == 0);
+-}
+-
+-bool
+-MultiHeaderPkt::isAddressLess(const AddressType &addr1,
+-                              const AddressType &addr2)
+-{
+-    return (std::memcmp(addr1, addr2, sizeof(addr1)) < 0);
+-}
+-
+-void
+-MultiHeaderPkt::copyAddress(AddressType &dest, const AddressType &src)
+-{
+-    std::memcpy(dest, src, sizeof(dest));
+-}
+-
+-bool
+-MultiHeaderPkt::isBroadcastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->broadcast();
+-}
+-
+-bool
+-MultiHeaderPkt::isMulticastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->multicast();
+-}
+-
+-bool
+-MultiHeaderPkt::isUnicastAddress(const AddressType &addr)
+-{
+-    return ((Net::EthAddr *)&addr)->unicast();
+-}
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_packet.hh
+--- a/src/dev/multi_packet.hh	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,130 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -4108,49 +4031,73 @@ deleted file mode 100644
 -    ~MultiHeaderPkt() {}
 -
 -  public:
--    enum class ReqType { immediate, collective, pending, none };
+-    /**
+-     * Simply type to help with calculating space requirements for
+-     * the corresponding header field.
+-     */
+-    typedef uint8_t AddressType[6];
+-
 -    /**
 -     *  The msg type defines what informarion a multi header packet carries.
 -     */
 -    enum class MsgType
 -    {
 -        dataDescriptor,
--        cmdSyncReq,
--        cmdSyncAck,
+-        cmdPeriodicSyncReq,
+-        cmdPeriodicSyncAck,
+-        cmdCkptSyncReq,
+-        cmdCkptSyncAck,
+-        cmdAtomicSyncReq,
+-        cmdAtomicSyncAck,
 -        unknown
 -    };
 -
 -    struct Header
 -    {
 -        /**
--         * The msg type field is valid for all header packets.
--         *
--         * @note senderRank is used with data packets while collFlags are used
--         * by sync ack messages to trigger collective ckpt or exit events.
+-         * The msg type field is valid for all header packets. In case of
+-         * a synchronisation control command this is the only valid field.
 -         */
 -        MsgType msgType;
 -        Tick sendTick;
--        union {
--            Tick sendDelay;
--            Tick syncRepeat;
--        };
--        union {
--            /**
--             * Actual length of the simulated Ethernet packet.
--             */
--            unsigned dataPacketLength;
--            struct {
--                ReqType needCkpt;
--                ReqType needExit;
--            };
--        };
+-        Tick sendDelay;
+-        /**
+-         * Actual length of the simulated Ethernet packet.
+-         */
+-        unsigned dataPacketLength;
+-        /**
+-         * Source MAC address.
+-         */
+-        AddressType srcAddress;
+-        /**
+-         * Destination MAC address.
+-         */
+-        AddressType dstAddress;
 -    };
+-
+-    static unsigned maxAddressLength();
+-
+-    /**
+-     * Static functions for manipulating and comparing MAC addresses.
+-     */
+-    static void clearAddress(AddressType &addr);
+-    static bool isAddressEqual(const AddressType &addr1,
+-                               const AddressType &addr2);
+-    static bool isAddressLess(const AddressType &addr1,
+-                              const AddressType &addr2);
+-
+-    static void copyAddress(AddressType &dest,
+-                            const AddressType &src);
+-
+-    static bool isUnicastAddress(const AddressType &addr);
+-    static bool isMulticastAddress(const AddressType &addr);
+-    static bool isBroadcastAddress(const AddressType &addr);
 -};
 -
 -#endif
-diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
---- a/src/dev/tcp_iface.cc
-+++ b/src/dev/tcp_iface.cc
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/tcp_iface.cc
+--- a/src/dev/tcp_iface.cc	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/tcp_iface.cc	Tue Oct 27 17:28:19 2015 +0000
 @@ -35,10 +35,11 @@
   * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   *
@@ -4164,64 +4111,242 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
   */
  
  #include "dev/tcp_iface.hh"
-@@ -54,8 +55,8 @@
+@@ -48,12 +49,15 @@
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <netinet/tcp.h>
+ 
+ #include <cerrno>
  #include <cstring>
  
  #include "base/types.hh"
 -#include "debug/MultiEthernet.hh"
--#include "debug/MultiEthernetCmd.hh"
 +#include "debug/DistEthernet.hh"
 +#include "debug/DistEthernetCmd.hh"
- #include "sim/sim_exit.hh"
++#include "sim/sim_exit.hh"
  
  // MSG_NOSIGNAL does not exists on OS X
-@@ -72,10 +73,10 @@
- bool TCPIface::anyListening = false;
+ #if defined(__APPLE__) || defined(__MACH__)
+@@ -65,41 +69,114 @@
+ using namespace std;
  
- TCPIface::TCPIface(string server_ip, unsigned server_port,
--                   unsigned multi_rank, unsigned multi_size,
+ vector<int> TCPIface::sockRegistry;
++int TCPIface::fdStatic = -1;
++bool TCPIface::anyListening = false;
+ 
+-TCPIface::TCPIface(string server_name, unsigned server_port,
+-                   unsigned multi_rank, Tick sync_start, Tick sync_repeat,
+-                   EventManager *em) :
+-    MultiIface(multi_rank, sync_start, sync_repeat, em)
++TCPIface::TCPIface(string server_ip, unsigned server_port,
 +                   unsigned dist_rank, unsigned dist_size,
-                    Tick sync_start, Tick sync_repeat,
-                    EventManager *em, bool is_switch, int num_nodes) :
--    MultiIface(multi_rank, multi_size, sync_start, sync_repeat, em,
++                   Tick sync_start, Tick sync_repeat,
++                   EventManager *em, bool is_switch, int num_nodes) :
 +    DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
-                is_switch, num_nodes),
-     port(server_port), ip(server_ip), isSwitch(is_switch), listening(false)
++               is_switch, num_nodes),
++    port(server_port), ip(server_ip), isSwitch(is_switch), listening(false)
  {
-@@ -123,7 +124,7 @@
-     if (isSwitch) {
-         if (isMaster) {
-             while (!listen(port)) {
--                DPRINTF(MultiEthernet, "TCPIface(listen): Can't bind port %d\n"
+-    struct addrinfo addr_hint, *addr_results;
++    establishConnection();
++}
++
++bool
++TCPIface::listen(int port) {
++    if (listening)
++        panic("Socket already listening!");
++
++    struct sockaddr_in sockaddr;
+     int ret;
+ 
+-    string port_str = to_string(server_port);
++    fdStatic = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
++    panic_if(fdStatic < 0, "socket() failed: %s", strerror(errno));
+ 
+-    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+-    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
++    sockaddr.sin_family = PF_INET;
++    sockaddr.sin_addr.s_addr = INADDR_ANY;
++    sockaddr.sin_port = htons(port);
++    // finally clear sin_zero
++    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
++    ret = bind(fdStatic, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
+ 
+-    bzero(&addr_hint, sizeof(addr_hint));
+-    addr_hint.ai_family = AF_INET;
+-    addr_hint.ai_socktype = SOCK_STREAM;
+-    addr_hint.ai_protocol = IPPROTO_TCP;
++    if (ret != 0) {
++        if (ret == -1 && errno != EADDRINUSE)
++            panic("ListenSocket(listen): bind() failed!");
++        return false;
++    }
+ 
+-    ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
+-                      &addr_hint, &addr_results);
+-    panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
++    if (::listen(fdStatic, 24) == -1) {
++        if (errno != EADDRINUSE)
++            panic("ListenSocket(listen): listen() failed!");
+ 
+-    DPRINTF(MultiEthernet, "Connecting to %s:%u\n",
+-            server_name.c_str(), port_str.c_str());
++        return false;
++    }
+ 
+-    ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
+-                    addr_results->ai_addrlen);
+-    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
++    listening = true;
++    anyListening = true;
++    return true;
++}
++void
++TCPIface::establishConnection()
++{
++    if (isSwitch) {
++        if (isMaster) {
++            while (!listen(port)) {
 +                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n"
-                         , port);
-                 port++;
-             }
-@@ -233,10 +234,10 @@
- void
- TCPIface::sendCmd(const Header &header)
- {
--    DPRINTF(MultiEthernetCmd, "TCPIface::sendCmd() type: %d\n",
-+    DPRINTF(DistEthernetCmd, "TCPIface::sendCmd() type: %d\n",
-             static_cast<int>(header.msgType));
-     // Global commands (i.e. sync request) are always sent by the master
--    // MultiIface. The transfer method is simply implemented as point-to-point
-+    // DistIface. The transfer method is simply implemented as point-to-point
-     // messages for now
-     for (auto s: sockRegistry)
-         sendTCP(s, (void*)&header, sizeof(header));
-@@ -246,7 +247,7 @@
- TCPIface::recvHeader(Header &header)
- {
-     bool ret = recvTCP(sock, &header, sizeof(header));
--    DPRINTF(MultiEthernetCmd, "TCPIface::recvHeader() type: %d ret: %d\n",
-+    DPRINTF(DistEthernetCmd, "TCPIface::recvHeader() type: %d ret: %d\n",
-             static_cast<int>(header.msgType), ret);
-     return ret;
++                        , port);
++                port++;
++            }
++            inform("tcp_iface listening on port %d", port);
++        }
++        accept();
++    } else {
++        connect(ip, port);
++    }
+ 
+-    freeaddrinfo(addr_results);
+-    // add our socket to the static registry
++}
++void
++TCPIface::accept()
++{
++    struct sockaddr_in sockaddr;
++    socklen_t slen = sizeof (sockaddr);
++    sock = ::accept(fdStatic, (struct sockaddr *)&sockaddr, &slen);
++    if (sock != -1) {
++        int i = 1;
++        if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&i,
++                         sizeof(i)) < 0)
++            warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
++    }
+     sockRegistry.push_back(sock);
+-    // let the server know who we are
+-    sendTCP(sock, &multi_rank, sizeof(multi_rank));
++}
++
++void
++TCPIface::connect(std::string server_name, int port)
++{
++
++    sock = socket(PF_INET, SOCK_STREAM, 0);
++    if (sock < 0)
++        panic("Can't create socket:%s !", strerror(errno));
++
++     int i = 1;
++     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&i,
++                         sizeof(i)) < 0)
++            warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
++
++    struct sockaddr_in sockaddr;
++    sockaddr.sin_family = PF_INET;
++    if(inet_pton(PF_INET, server_name.c_str(), &sockaddr.sin_addr)<=0) {
++        panic("\n inet_pton error occured\n");
++    }
++    sockaddr.sin_port = htons(port);
++    // finally clear sin_zero
++    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
++    int ret = ::connect(sock, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
++    if (ret != 0) {
++        panic("ConnectSocket(connect): connect() failed!");
++    }
++    sockRegistry.push_back(sock);
  }
-diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
---- a/src/dev/tcp_iface.hh
-+++ b/src/dev/tcp_iface.hh
+ 
+ TCPIface::~TCPIface()
+@@ -111,12 +188,20 @@
+ }
+ 
+ void
+-TCPIface::sendTCP(int sock, void *buf, unsigned length)
++TCPIface::sendTCP(int sock, const void *buf, unsigned length)
+ {
+     ssize_t ret;
+ 
+     ret = ::send(sock, buf, length, MSG_NOSIGNAL);
+-    panic_if(ret < 0, "send() failed: %s", strerror(errno));
++    if (ret < 0) {
++        if (errno == ECONNRESET || errno == EPIPE) {
++            inform("send(): %s", strerror(errno));
++            exit_message("info", 0, "Message server closed connection, "
++                         "simulation is exiting");
++        } else {
++            panic("send() failed: %s", strerror(errno));
++        }
++    }
+     panic_if(ret != length, "send() failed");
+ }
+ 
+@@ -140,19 +225,40 @@
+ }
+ 
+ void
+-TCPIface::syncRaw(MultiHeaderPkt::MsgType sync_req, Tick sync_tick)
++TCPIface::sendPacket(const Header &header, const EthPacketPtr &packet)
+ {
+-    /*
+-     * Barrier is simply implemented by point-to-point messages to the server
+-     * for now. This method is called by only one TCPIface object.
+-     * The server will send back an 'ack' message when it gets the
+-     * sync request from all clients.
+-     */
+-    MultiHeaderPkt::Header header_pkt;
+-    header_pkt.msgType = sync_req;
+-    header_pkt.sendTick = sync_tick;
+-
+-    for (auto s : sockRegistry)
+-        sendTCP(s, (void *)&header_pkt, sizeof(header_pkt));
++    sendTCP(sock, &header, sizeof(header));
++    sendTCP(sock, packet->data, packet->length);
+ }
+ 
++void
++TCPIface::sendCmd(const Header &header)
++{
++    DPRINTF(DistEthernetCmd, "TCPIface::sendCmd() type: %d\n",
++            static_cast<int>(header.msgType));
++    // Global commands (i.e. sync request) are always sent by the master
++    // DistIface. The transfer method is simply implemented as point-to-point
++    // messages for now
++    for (auto s: sockRegistry)
++        sendTCP(s, (void*)&header, sizeof(header));
++}
++
++bool
++TCPIface::recvHeader(Header &header)
++{
++    bool ret = recvTCP(sock, &header, sizeof(header));
++    DPRINTF(DistEthernetCmd, "TCPIface::recvHeader() type: %d ret: %d\n",
++            static_cast<int>(header.msgType), ret);
++    return ret;
++}
++
++void
++TCPIface::recvPacket(const Header &header, EthPacketPtr &packet)
++{
++    packet = make_shared<EthPacketData>(header.dataPacketLength);
++    bool ret = recvTCP(sock, packet->data, header.dataPacketLength);
++    panic_if(!ret, "Error while reading socket");
++    packet->length = header.dataPacketLength;
++}
++
++
+diff -r 3648cc90b58e -r 7056641348f3 src/dev/tcp_iface.hh
+--- a/src/dev/tcp_iface.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/dev/tcp_iface.hh	Tue Oct 27 17:28:19 2015 +0000
 @@ -35,17 +35,17 @@
   * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   *
@@ -4260,7 +4385,70 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  {
    private:
      /**
-@@ -126,13 +126,13 @@
+@@ -67,6 +67,14 @@
+      */
+     int sock;
+ 
++    int port;
++    std::string ip;
++    bool isSwitch;
++
++    bool listening;
++    static bool anyListening;
++    static int fdStatic;
++
+     /**
+      * Registry for all sockets to the server opened by this gem5 process.
+      */
+@@ -82,7 +90,7 @@
+      * @param length Size of the message in bytes.
+      */
+     void
+-    sendTCP(int sock, void *buf, unsigned length);
++    sendTCP(int sock, const void *buf, unsigned length);
+ 
+     /**
+      * Receive the next incoming message through a TCP stream socket.
+@@ -92,25 +100,24 @@
+      * @param length Exact size of the expected message in bytes.
+      */
+     bool recvTCP(int sock, void *buf, unsigned length);
+-
++    bool listen(int port);
++    void accept();
++    void connect(std::string server_name, int port);
++    int getfdStatic() const { return fdStatic; }
++    bool islistening() const { return listening; }
++    bool anyislistening() const { return anyListening; }
++    void establishConnection();
+ 
+   protected:
+ 
+-    virtual void
+-    sendRaw(void *buf, unsigned length,
+-            const MultiHeaderPkt::AddressType dest_addr=nullptr)
+-        M5_ATTR_OVERRIDE
+-    {
+-        sendTCP(sock, buf, length);
+-    }
++    void sendPacket(const Header &header,
++                    const EthPacketPtr &packet) M5_ATTR_OVERRIDE;
+ 
+-    virtual bool recvRaw(void *buf, unsigned length) M5_ATTR_OVERRIDE
+-    {
+-        return recvTCP(sock, buf, length);
+-    }
++    void sendCmd(const Header &header) M5_ATTR_OVERRIDE;
+ 
+-    virtual void syncRaw(MultiHeaderPkt::MsgType sync_req,
+-                         Tick sync_tick) M5_ATTR_OVERRIDE;
++    bool recvHeader(Header &header) M5_ATTR_OVERRIDE;
++
++    void recvPacket(const Header &header, EthPacketPtr &packet) M5_ATTR_OVERRIDE;
+ 
+   public:
+     /**
+@@ -119,14 +126,15 @@
       * server process.
       * @param server_port The port number the server listening for new
       * connections.
@@ -4272,667 +4460,245 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
       * Ethernet link.
       */
      TCPIface(std::string server_name, unsigned server_port,
--             unsigned multi_rank, unsigned multi_size,
+-             unsigned multi_rank, Tick sync_start, Tick sync_repeat,
+-             EventManager *em);
 +             unsigned dist_rank, unsigned dist_size,
-              Tick sync_start, Tick sync_repeat, EventManager *em,
-              bool is_switch, int num_nodes);
++             Tick sync_start, Tick sync_repeat, EventManager *em,
++             bool is_switch, int num_nodes);
  
-diff --git a/src/sim/pseudo_inst.cc b/src/sim/pseudo_inst.cc
---- a/src/sim/pseudo_inst.cc
-+++ b/src/sim/pseudo_inst.cc
-@@ -63,7 +63,7 @@
+     ~TCPIface() M5_ATTR_OVERRIDE;
+ };
+diff -r 3648cc90b58e -r 7056641348f3 src/sim/global_event.hh
+--- a/src/sim/global_event.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/sim/global_event.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -219,7 +219,7 @@
+     };
+ 
+     GlobalSyncEvent(Priority p, Flags f)
+-        : Base(p, f)
++        : Base(p, f), repeat(0)
+     { }
+ 
+     GlobalSyncEvent(Tick when, Tick _repeat, Priority p, Flags f)
+diff -r 3648cc90b58e -r 7056641348f3 src/sim/initparam_keys.hh
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/sim/initparam_keys.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -0,0 +1,67 @@
++/*
++ * Copyright (c) 2015 ARM Limited
++ * All rights reserved
++ *
++ * The license below extends only to copyright in the software and shall
++ * not be construed as granting a license to any other intellectual
++ * property including but not limited to intellectual property relating
++ * to a hardware implementation of the functionality of the software
++ * licensed hereunder.  You may use the software subject to the license
++ * terms below provided that you ensure that this notice is replicated
++ * unmodified and in its entirety in all distributions of the software,
++ * modified or unmodified, in source code or in binary form.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met: redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer;
++ * redistributions in binary form must reproduce the above copyright
++ * notice, this list of conditions and the following disclaimer in the
++ * documentation and/or other materials provided with the distribution;
++ * neither the name of the copyright holders nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * Authors: Gabor Dozsa
++ */
++
++/* @file
++ * Magic key definitions for the InitParam pseudo inst
++ */
++#ifndef ___SIM_INITPARAM_KEYS_HH__
++#define ___SIM_INITPARAM_KEYS_HH__
++
++namespace PseudoInst {
++/**
++ * Magic keys to retrieve various params by the iniParam pseudo inst.
++ *
++ */
++struct InitParamKey {
++    /**
++     *  The default key (0)
++     */
++    static constexpr int DEFAULT = 0;
++    /**
++     *  Magic key for "rank" param (parallel multi-gem5 runs)
++     */
++    static constexpr int MULTI_RANK = 1234;
++    /**
++     *  Magic key for "size" param (parallel multi-gem5 runs)
++     */
++    static constexpr int MULTI_SIZE = 1235;
++};
++} // namespace PseudoInst
++
++#endif
+diff -r 3648cc90b58e -r 7056641348f3 src/sim/pseudo_inst.cc
+--- a/src/sim/pseudo_inst.cc	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/sim/pseudo_inst.cc	Tue Oct 27 17:28:19 2015 +0000
+@@ -63,8 +63,10 @@
  #include "debug/PseudoInst.hh"
  #include "debug/Quiesce.hh"
  #include "debug/WorkItems.hh"
--#include "dev/multi_iface.hh"
 +#include "dev/dist_iface.hh"
  #include "params/BaseCPU.hh"
  #include "sim/full_system.hh"
- #include "sim/initparam_keys.hh"
-@@ -359,7 +359,7 @@
++#include "sim/initparam_keys.hh"
+ #include "sim/process.hh"
+ #include "sim/pseudo_inst.hh"
+ #include "sim/serialize.hh"
+@@ -141,7 +143,7 @@
+         break;
+ 
+       case 0x30: // initparam_func
+-        return initParam(tc);
++        return initParam(tc, args[0]);
+ 
+       case 0x31: // loadsymbol_func
+         loadsymbol(tc);
+@@ -357,8 +359,10 @@
  m5exit(ThreadContext *tc, Tick delay)
  {
      DPRINTF(PseudoInst, "PseudoInst::m5exit(%i)\n", delay);
--    if (MultiIface::readyToExit(delay)) {
+-    Tick when = curTick() + delay * SimClock::Int::ns;
+-    exitSimLoop("m5_exit instruction encountered", 0, when, 0, true);
 +    if (DistIface::readyToExit(delay)) {
-         Tick when = curTick() + delay * SimClock::Int::ns;
-         exitSimLoop("m5_exit instruction encountered", 0, when, 0, true);
++        Tick when = curTick() + delay * SimClock::Int::ns;
++        exitSimLoop("m5_exit instruction encountered", 0, when, 0, true);
++    }
+ }
+ 
+ void
+@@ -440,15 +444,28 @@
+ }
+ 
+ uint64_t
+-initParam(ThreadContext *tc)
++initParam(ThreadContext *tc, uint64_t key)
+ {
+-    DPRINTF(PseudoInst, "PseudoInst::initParam()\n");
++    DPRINTF(PseudoInst, "PseudoInst::initParam() key:%llu\n", key);
+     if (!FullSystem) {
+         panicFsOnlyPseudoInst("initParam");
+         return 0;
      }
-@@ -457,10 +457,10 @@
-         val = tc->getCpuPtr()->system->init_param;
-         break;
-       case InitParamKey::MULTI_RANK:
--        val = MultiIface::rankParam();
+-
+-    return tc->getCpuPtr()->system->init_param;
++    uint64_t val;
++    switch (key) {
++      case InitParamKey::DEFAULT:
++        val = tc->getCpuPtr()->system->init_param;
++        break;
++      case InitParamKey::MULTI_RANK:
 +        val = DistIface::rankParam();
-         break;
-       case InitParamKey::MULTI_SIZE:
--        val = MultiIface::sizeParam();
++        break;
++      case InitParamKey::MULTI_SIZE:
 +        val = DistIface::sizeParam();
-         break;
-       default:
-         panic("Unknown key for initparam pseudo instruction");
-@@ -518,7 +518,7 @@
++        break;
++      default:
++        panic("Unknown key for initparam pseudo instruction");
++    }
++    return val;
+ }
+ 
+ 
+@@ -501,10 +518,11 @@
      if (!tc->getCpuPtr()->params()->do_checkpoint_insts)
          return;
  
--    if (MultiIface::readyToCkpt(delay, period)) {
+-    Tick when = curTick() + delay * SimClock::Int::ns;
+-    Tick repeat = period * SimClock::Int::ns;
+-
+-    exitSimLoop("checkpoint", 0, when, repeat);
 +    if (DistIface::readyToCkpt(delay, period)) {
-         Tick when = curTick() + delay * SimClock::Int::ns;
-         Tick repeat = period * SimClock::Int::ns;
-         exitSimLoop("checkpoint", 0, when, repeat);
-diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
-new file mode 100755
---- /dev/null
-+++ b/util/dist/gem5-dist.sh
-@@ -0,0 +1,362 @@
-+#! /bin/bash
-+
-+#
-+# Copyright (c) 2015 ARM Limited
-+# All rights reserved
-+#
-+# The license below extends only to copyright in the software and shall
-+# not be construed as granting a license to any other intellectual
-+# property including but not limited to intellectual property relating
-+# to a hardware implementation of the functionality of the software
-+# licensed hereunder.  You may use the software subject to the license
-+# terms below provided that you ensure that this notice is replicated
-+# unmodified and in its entirety in all distributions of the software,
-+# modified or unmodified, in source code or in binary form.
-+#
-+# Copyright (c) 2015 University of Illinois Urbana Champaing
-+# All rights reserved
-+#
-+# Redistribution and use in source and binary forms, with or without
-+# modification, are permitted provided that the following conditions are
-+# met: redistributions of source code must retain the above copyright
-+# notice, this list of conditions and the following disclaimer;
-+# redistributions in binary form must reproduce the above copyright
-+# notice, this list of conditions and the following disclaimer in the
-+# documentation and/or other materials provided with the distribution;
-+# neither the name of the copyright holders nor the names of its
-+# contributors may be used to endorse or promote products derived from
-+# this software without specific prior written permission.
-+#
-+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+#
-+# Authors: Gabor Dozsa
-+#          Mohammad Alian
-+
-+
-+# This is a wrapper script to run a dist gem5 simulations.
-+# See the usage_func() below for hints on how to use it. Also,
-+# there are some examples in the util/dist directory (e.g.
-+# see util/dist/test-2nodes-AArch64.sh)
-+#
-+#
-+# Allocated hosts/cores are assumed to be listed in the LSB_MCPU_HOSTS
-+# environment variable (which is what LSF does by default).
-+# E.g. LSB_MCPU_HOSTS=\"hname1 2 hname2 4\" means we have altogether 6 slots
-+# allocated to launch the gem5 processes, 2 of them are on host hname1
-+# and 4 of them are on host hname2.
-+# If LSB_MCPU_HOSTS environment variable is not defined then we launch all
-+# processes on the localhost.
-+#
-+# Each gem5 process are passed in a unique rank ID [0..N-1] via the kernel
-+# boot params. The total number of gem5 processes is also passed in.
-+# These values can be used in the boot script to configure the MAC/IP
-+# addresses - among other things (see util/dist/bootscript.rcS).
-+#
-+# Each gem5 process will create an m5out.$GEM5_RANK directory for
-+# the usual output files. Furthermore, there will be a separate log file
-+# for each ssh session (we use ssh to start gem5 processes) and one for
-+# the server. These are called log.$GEM5_RANK and log.switch.
-+#
-+
-+
-+# print help
-+usage_func ()
-+{
-+    echo "Usage:$0 [-debug] [-d debug-flags] [-n nnodes] [-f fullsystem] [-s switch] [-p port] [-r rundir] [-c ckptdir] gem5_exe gem5_args"
-+    echo "     -debug    : debug mode (start gem5 in gdb)"
-+    echo "     debugflags: debug flags for trace based debugging"
-+    echo "     nnodes    : number of gem5 processes"
-+    echo "     fullsystem: fullsystem config file"
-+    echo "     switch    : switch config file"
-+    echo "     port      : switch listen port"
-+    echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
-+    echo "     ckptdir   : dump/restore checkpoints to/from this path. If not specified, current dir will be used"
-+    echo "     gem5_exe  : gem5 executable (full path required)"
-+    echo "     gem5_args : usual gem5 arguments ( m5 options, config script options)"
-+    echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
-+}
-+
-+
-+# Process (optional) command line options
-+
-+while true
-+do
-+    case "x$1" in
-+        x-n|x-nodes)
-+            NNODES=$2
-+            shift 2
-+            ;;
-+        x-d|x-debug-flags)
-+            GEM5_DEBUG_FLAGS=$2
-+            shift 2
-+            ;;
-+        x-f|x-fullsystem)
-+            FS_CONFIG=$2
-+            shift 2
-+            ;;
-+        x-s|x-switch)
-+            SWITCH_CONFIG=$2
-+            shift 2
-+            ;;
-+        x-p|x-port)
-+            SWITCH_PORT=$2
-+            shift 2
-+            ;;
-+        x-debug)
-+            GEM5_DEBUG="-debug"
-+            shift 1
-+            ;;
-+        x-r|x-rundir)
-+            RUN_DIR=$2
-+            shift 2
-+            ;;
-+        x-c|x-ckptdir)
-+            CKPT_DIR=$2
-+            shift 2
-+            ;;
-+        *)
-+            break
-+            ;;
-+    esac
-+done
-+
-+# The remaining command line args must be the usual gem5 command
-+(($# < 2)) && { usage_func; exit -1; }
-+GEM5_EXE=$1
-+shift
-+GEM5_ARGS="$*"
-+
-+# Default values to use (in case they are not defined as command line options)
-+DEFAULT_FS_CONFIG=$M5_PATH/configs/example/fs.py
-+DEFAULT_SWITCH_CONFIG=$M5_PATH/configs/example/sw.py
-+DEFAULT_SWITCH_PORT=2200
-+
-+[ -z "$FS_CONFIG" ]  && FS_CONFIG=$DEFAULT_FS_CONFIG
-+[ -z "$SWITCH_CONFIG" ]  && SWITCH_CONFIG=$DEFAULT_SWITCH_CONFIG
-+[ -z "$SWITCH_PORT" ] && SWITCH_PORT=$DEFAULT_SWITCH_PORT
-+[ -z "$NNODES" ]      && NNODES=2
-+[ -z "$RUN_DIR" ]      && RUN_DIR=$(pwd)
-+[ -z "$CKPT_DIR" ]      && CKPT_DIR=$(pwd)
-+! [ -z "$GEM5_DEBUG_FLAGS" ] && GEM5_DEBUG_FLAGS="--debug-flags=$GEM5_DEBUG_FLAGS"
-+
-+#  Check if all the executables we need exist
-+[ -f "$FS_CONFIG" ] || { echo "Switch config ${FS_CONFIG} not found"; exit 1; }
-+[ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
-+[ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
-+# make sure that RUN_DIR exists
-+mkdir -p $RUN_DIR > /dev/null 2>&1 
-+
-+declare -a SSH_PIDS
-+declare -a HOSTS
-+declare -a NCORES
-+
-+# Find out which cluster hosts/slots are allocated or
-+# use localhost if there is no LSF allocation.
-+# We assume that allocated slots are listed in the LSB_MCPU_HOSTS
-+# environment variable in the form:
-+# host1 nslots1 host2 nslots2 ...
-+# (This is what LSF does by default.)
-+NH=0
-+[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="127.0.0.1 $NNODES"
-+host=""
-+for hc in $LSB_MCPU_HOSTS
-+do
-+    if [ "x$host" == "x" ]
-+    then
-+        host=$hc
-+        HOSTS+=($hc)
-+    else
-+        NCORES+=($hc)
-+        ((NH+=hc))
-+        host=""
-+    fi
-+done
-+((NNODES==NH)) || { echo "(E) Number of cluster slots ($NH) and gem5 instances ($N) differ"; exit -1; }
-+#echo "hosts: ${HOSTS[@]}"
-+#echo "hosts: ${NCORES[@]}"
-+#echo ${#HOSTS[@]}
-+
-+
-+# function to clean up and abort if something goes wrong
-+abort_func ()
-+{
-+    echo
-+    echo "KILLED $(date)"
-+    # Try to Kill the server first. That should trigger an exit for all connected
-+    # gem5 processes.
-+    [ "x$SWITCH_PID" != "x" ] && kill $SWITCH_PID 2>/dev/null
-+    sleep 20
-+    # (try to) kill gem5 processes - just in case something went wrong with the
-+    # server triggered exit
-+    bname=$(basename $GEM5_EXE)
-+    killall -q -s SIGKILL $bname
-+    for h in ${HOSTS[@]}
-+    do
-+	ssh $h killall -q -s SIGKILL $bname
-+    done
-+    sleep 5
-+    # kill the watchdog
-+    [ "x$WATCHDOG_PID" != "x" ] && kill $WATCHDOG_PID 2>/dev/null
-+    exit -1
-+}
-+
-+
-+# We need a watchdog to trigger full clean up if a gem5 process dies
-+watchdog_func ()
-+{
-+    while true
-+    do
-+        sleep 30
-+        ((NDEAD=0))
-+        for p in ${SSH_PIDS[*]}
-+        do
-+            kill -0 $p 2>/dev/null || ((NDEAD+=1))
-+        done
-+        kill -0 $SWITCH_PID || ((NDEAD+=1))
-+        if ((NDEAD>0))
-+        then
-+            # we may be in the middle of an orderly termination,
-+            # give it some time to complete before reporting abort
-+            sleep 60
-+            echo -n "(I) (some) gem5 process(es) exited"
-+            abort_func
-+        fi
-+    done
-+}
-+
-+# This function launches the gem5 processes. The only purpose is to enable
-+# launching gem5 processes under gdb control for debugging
-+start_func ()
-+{
-+      local N=$1
-+      local HOST=$2
-+      local ENV_ARGS=$3
-+      shift 3
-+      if [ "x$GEM5_DEBUG" != "x" ]
-+      then
-+	      echo "DEBUG starting terminal..."
-+	      MY_ARGS="$@"
-+	      xterm -e "gdb --args $MY_ARGS" &
-+      else
-+        ssh $HOST $ENV_ARGS "$@" &> $RUN_DIR/log.$N &
-+      fi
-+}
-+
-+# block till the gem5 process starts
-+connected ()
-+{
-+    FILE=$1
-+    STRING=$2
-+    echo -n "waiting for $3 to start "
-+    while : ;
-+    do
-+        kill -0 $4 || { echo "Failed to start $3"; exit -1; }
-+        [[ -f "$FILE" ]] &&                                                   \
-+        grep -q "$STRING" "$FILE" &&                                          \
-+        echo -e "\nnode #$3 started" &&                                       \
-+        break
-+
-+        sleep 2
-+        echo -n "."
-+    done
-+}
-+
-+# Trigger full clean up in case we are being killed by external signal
-+trap 'abort_func' INT TERM
-+
-+# env args to be passed explicitly to gem5 processes started via ssh
-+ENV_ARGS="LD_LIBRARY_PATH=$LD_LIBRARY_PATH M5_PATH=$M5_PATH"
-+
-+#cleanup log files before starting gem5 processes
-+rm $RUN_DIR/log.switch > /dev/null 2>&1
-+
-+# make sure that CKPT_DIR exists
-+mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1 
-+# launch switch gem5
-+echo "launch switch gem5 process ..."
-+$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
-+             $GEM5_DEBUG_FLAGS                                                \
-+             $SWITCH_CONFIG                                                   \
-+             $GEM5_ARGS                                                       \
-+             --checkpoint-dir=$CKPT_DIR/m5out.switch                          \
-+             --is-switch                                                      \
-+             --dist-size=$NNODES                                              \
-+             --dist-server-port=$SWITCH_PORT &> $RUN_DIR/log.switch &
-+SWITCH_PID=$!
-+
-+# block here till switch process starts
-+connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SWITCH_PID
-+LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
-+
-+IFS=' ' read -ra ADDR <<< "$LINE"
-+# acutal port that switch is listening on may be different 
-+# from what we specified if the port was busy
-+SWITCH_PORT=${ADDR[5]}
-+
-+# Now launch all the gem5 processes with ssh.
-+echo "START $(date)"
-+n=0
-+for ((i=0; i < ${#HOSTS[@]}; i++))
-+do
-+    h=${HOSTS[$i]}
-+    for ((j=0; j < ${NCORES[i]}; j++))
-+    do
-+        #cleanup log files before starting gem5 processes
-+        rm $RUN_DIR/log.$n > /dev/null 2>&1
-+        # make sure that CKPT_DIR exists
-+        mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
-+	    echo "starting gem5 on $h ..."
-+	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n           \
-+        $GEM5_DEBUG_FLAGS                                                     \
-+        $FS_CONFIG                                                            \
-+        $GEM5_ARGS                                                            \
-+        --checkpoint-dir=$CKPT_DIR/m5out.$n                                   \
-+	    --dist                                                                \
-+	    --dist-rank=$n                                                        \
-+	    --dist-size=$NNODES                                                   \
-+        --dist-server-name=${HOSTS[0]}                                        \
-+        --dist-server-port=$SWITCH_PORT
-+	    SSH_PIDS[$n]=$!
-+        if [ "x$GEM5_DEBUG" == "x" ]
-+        then
-+            connected $RUN_DIR/log.$n "Listening" $j ${SSH_PIDS[$n]}
-+        fi
-+	    ((n+=1))
-+    done
-+done
-+
-+# Wait here if it is a debug session
-+[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SWITCH_PID; exit -1; }
-+
-+# start watchdog to trigger complete abort (after a grace period) if any
-+# gem5 process dies
-+watchdog_func &
-+WATCHDOG_PID=$!
-+
-+# wait for exit statuses
-+((NFAIL=0))
-+for p in ${SSH_PIDS[*]}
-+do
-+    wait $p || ((NFAIL+=1))
-+done
-+wait $SWITCH_PID || ((NFAIL+=1))
-+
-+# all done, let's terminate the watchdog
-+kill $WATCHDOG_PID 2>/dev/null
-+
-+if ((NFAIL==0))
-+then
-+    echo "EXIT $(date)"
-+else
-+    echo "ABORT $(date)"
-+fi
-diff --git a/util/dist/test/bootscript.rcS b/util/dist/test/bootscript.rcS
-new file mode 100644
---- /dev/null
-+++ b/util/dist/test/bootscript.rcS
-@@ -0,0 +1,153 @@
-+#!/bin/bash
-+
-+
-+#
-+# Copyright (c) 2015 ARM Limited
-+# All rights reserved
-+#
-+# The license below extends only to copyright in the software and shall
-+# not be construed as granting a license to any other intellectual
-+# property including but not limited to intellectual property relating
-+# to a hardware implementation of the functionality of the software
-+# licensed hereunder.  You may use the software subject to the license
-+# terms below provided that you ensure that this notice is replicated
-+# unmodified and in its entirety in all distributions of the software,
-+# modified or unmodified, in source code or in binary form.
-+#
-+# Copyright (c) 2015 University of Illinois Urbana Champaing
-+# All rights reserved
-+#
-+# Redistribution and use in source and binary forms, with or without
-+# modification, are permitted provided that the following conditions are
-+# met: redistributions of source code must retain the above copyright
-+# notice, this list of conditions and the following disclaimer;
-+# redistributions in binary form must reproduce the above copyright
-+# notice, this list of conditions and the following disclaimer in the
-+# documentation and/or other materials provided with the distribution;
-+# neither the name of the copyright holders nor the names of its
-+# contributors may be used to endorse or promote products derived from
-+# this software without specific prior written permission.
-+#
-+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+#
-+# Authors: Gabor Dozsa
-+#          Mohammad Alian
-+#
-+#
-+# This is an example boot script to use for dist-gem5 runs. The important
-+# task here is to extract the rank and size information through the m5
-+# initparam utility and use those to configure MAC/IP addresses and hostname.
-+#
-+# You are expected to customize this scipt for your needs (e.g. change
-+# the command at the end of the scipt to run your tests/workloads.
-+
-+source /root/.bashrc
-+echo "bootscript.rcS is running"
-+
-+# Retrieve dist-gem5 rank and size parameters using magic keys
-+MY_RANK=$(/sbin/m5 initparam 1234)
-+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
-+MY_SIZE=$(/sbin/m5 initparam 1235)
-+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
-+
-+
-+echo "***** Start boot script! *****"
-+if [ "${RUNSCRIPT_VAR+set}" != set ]
-+then
-+    # Signal our future self that it's safe to continue
-+    echo "RUNSCRIPT_VAR not set! Setting it ..."
-+    export RUNSCRIPT_VAR=1
-+else
-+    if [ "$MY_RANK" == "0" ]
-+    then
-+        # We've already executed once, so we should exit
-+        echo "calling m5 exit!"
-+        /sbin/m5 exit
-+    else
-+        echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
-+        echo "Else part - Loading new script..."
-+        /sbin/m5 readfile > /tmp/runscript1.sh
-+        chmod 755 /tmp/runscript1.sh
-+
-+        # Execute the new runscript
-+        if [ -s /tmp/runscript1.sh ]
-+        then
-+            #/system/bin/sh /data/runscript1.sh
-+            echo "Else part - executing newly loaded script ...!"
-+            /bin/bash /tmp/runscript1.sh
-+        else 
-+            echo "Else part - Script not specified."
-+            echo "Else part - Exiting..." 
-+            /sbin/m5 exit
-+        fi
-+    fi
-+fi
-+
-+/bin/hostname node${MY_RANK}
-+
-+# Keep MAC address assignment simple for now ...
-+(($MY_RANK > 97)) && { echo "(E) Rank must be less than 98"; /sbin/m5 abort; }
-+((MY_ADDR = MY_RANK + 2))
-+if (($MY_ADDR < 10))
-+then
-+    MY_ADDR_PADDED=0${MY_ADDR}
-+else
-+    MY_ADDR_PADDED=${MY_ADDR}
-+fi
-+
-+/sbin/ifconfig eth0 hw ether 00:90:00:00:00:${MY_ADDR_PADDED}
-+/sbin/ifconfig eth0 192.168.0.${MY_ADDR} netmask 255.255.255.0 up
-+
-+/sbin/ifconfig -a
-+
-+echo "Hello from $MY_RANK of $MY_SIZE"
-+
-+
-+if [ "$MY_RANK" == "0" ]
-+then
-+    # Trigger an immediate checkpoint at the next sync (by passing a non-zero
-+    # delay param to m5 ckpt)
-+    /sbin/m5 checkpoint 1
-+else
-+    # do nothing, just iterate through the script
-+    echo "do nothing, just iterate through the script ..."
-+fi
-+
-+#THIS IS WHERE EXECUTION BEGINS FROM AFTER RESTORING FROM CKPT
-+if [ "$RUNSCRIPT_VAR" -eq 1 ]
-+then
-+
-+    # Signal our future self not to recurse infinitely
-+    export RUNSCRIPT_VAR=2
-+    echo "3. RUNSCRIPT_VAR is $RUNSCRIPT_VAR"
-+
-+    # Read the script for the checkpoint restored execution
-+    echo "Loading new script..."
-+    /sbin/m5 readfile > /tmp/runscript1.sh
-+    chmod 755 /tmp/runscript1.sh
-+
-+    # Execute the new runscript
-+    if [ -s /tmp/runscript1.sh ]
-+    then
-+        #/system/bin/sh /data/runscript1.sh
-+        echo "executing newly loaded script ..."
-+        /bin/bash /tmp/runscript1.sh
-+
-+    else
-+        echo "Script not specified. Dropping into shell..."
-+    fi
-+
-+fi
-+
-+echo "Fell through script. Exiting..."
-+/sbin/m5 exit
-diff --git a/util/dist/test/test-2nodes-AArch64.sh b/util/dist/test/test-2nodes-AArch64.sh
-new file mode 100755
---- /dev/null
-+++ b/util/dist/test/test-2nodes-AArch64.sh
-@@ -0,0 +1,79 @@
-+#! /bin/bash
-+
-+#
-+# Copyright (c) 2015 ARM Limited
-+# All rights reserved
-+#
-+# The license below extends only to copyright in the software and shall
-+# not be construed as granting a license to any other intellectual
-+# property including but not limited to intellectual property relating
-+# to a hardware implementation of the functionality of the software
-+# licensed hereunder.  You may use the software subject to the license
-+# terms below provided that you ensure that this notice is replicated
-+# unmodified and in its entirety in all distributions of the software,
-+# modified or unmodified, in source code or in binary form.
-+#
-+# Redistribution and use in source and binary forms, with or without
-+# modification, are permitted provided that the following conditions are
-+# met: redistributions of source code must retain the above copyright
-+# notice, this list of conditions and the following disclaimer;
-+# redistributions in binary form must reproduce the above copyright
-+# notice, this list of conditions and the following disclaimer in the
-+# documentation and/or other materials provided with the distribution;
-+# neither the name of the copyright holders nor the names of its
-+# contributors may be used to endorse or promote products derived from
-+# this software without specific prior written permission.
-+#
-+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+#
-+# Authors: Gabor Dozsa
-+#
-+#
-+# This is an example script to start a dist gem5 simulations using
-+# two AArch64 systems. It is also uses the example
-+# dist gem5 bootscript util/dist/test/bootscript.rcS that will run the
-+# linux ping command to check if we can see the peer system connected via
-+# the simulated Ethernet link.
-+
-+GEM5_DIR=$(pwd)/$(dirname $0)/../../..
-+
-+#M5_PATH=$HOME/GEM5/public_dist
-+#export M5_PATH
-+
-+
-+
-+IMG=$M5_PATH/disks/aarch64-ubuntu-trusty-headless.img
-+VMLINUX=$M5_PATH/binaries/vmlinux.aarch64.20140821
-+DTB=$M5_PATH/binaries/vexpress.aarch64.20140821.dtb
-+
-+SYS_CONFIG=$GEM5_DIR/configs/example/fs.py
-+#SYS_CONFIG=$HOME/GEM5/BRANDNEW/gem5-obj/configs/hpc/RealViewHPC.py
-+GEM5_EXE=$GEM5_DIR/build/ARM/gem5.opt
-+
-+BOOT_SCRIPT=$GEM5_DIR/util/dist/test/bootscript.rcS
-+GEM5_DIST_SH=$GEM5_DIR/util/dist/gem5-dist.sh
-+
-+DEBUG_FLAGS="-d DistEthernet,DistEthernetPkt"
-+#CHKPT_RESTORE="-r1"
-+
-+NNODES=2
-+
-+$GEM5_DIST_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE   \
-+    --cpu-type=atomic                                          \
-+    --num-cpus=1                                               \
-+    --machine-type=VExpress_EMM64                              \
-+    --disk-image=$IMG                                          \
-+    --kernel=$VMLINUX                                          \
-+    --dtb-filename=$DTB                                        \
-+    --script=$BOOT_SCRIPT                                      \
-+    $CHKPT_RESTORE
-diff --git a/util/multi/Makefile b/util/multi/Makefile
-deleted file mode 100644
---- a/util/multi/Makefile
-+++ /dev/null
++        Tick when = curTick() + delay * SimClock::Int::ns;
++        Tick repeat = period * SimClock::Int::ns;
++        exitSimLoop("checkpoint", 0, when, repeat);
++    }
+ }
+ 
+ uint64_t
+diff -r 3648cc90b58e -r 7056641348f3 src/sim/pseudo_inst.hh
+--- a/src/sim/pseudo_inst.hh	Tue Oct 27 17:26:18 2015 +0000
++++ b/src/sim/pseudo_inst.hh	Tue Oct 27 17:28:19 2015 +0000
+@@ -75,7 +75,7 @@
+     uint64_t offset, Addr filenameAddr);
+ void loadsymbol(ThreadContext *xc);
+ void addsymbol(ThreadContext *tc, Addr addr, Addr symbolAddr);
+-uint64_t initParam(ThreadContext *xc);
++uint64_t initParam(ThreadContext *xc, uint64_t key);
+ uint64_t rpns(ThreadContext *tc);
+ void wakeCPU(ThreadContext *tc, uint64_t cpuid);
+ void m5exit(ThreadContext *tc, Tick delay);
+diff -r 3648cc90b58e -r 7056641348f3 util/m5/m5.c
+--- a/util/m5/m5.c	Tue Oct 27 17:26:18 2015 +0000
++++ b/util/m5/m5.c	Tue Oct 27 17:28:19 2015 +0000
+@@ -233,10 +233,12 @@
+ void
+ do_initparam(int argc, char *argv[])
+ {
+-    if (argc != 0)
++    if (argc > 1)
+         usage();
+ 
+-    uint64_t val = m5_initparam();
++    uint64_t key = 0;
++    parse_int_args(argc, argv, &key, 1);
++    uint64_t val = m5_initparam(key);
+     printf("%"PRIu64, val);
+ }
+ 
+@@ -246,7 +248,7 @@
+     if (argc != 0)
+         usage();
+ 
+-    uint64_t param = m5_initparam();
++    uint64_t param = m5_initparam(0);
+ 
+     // run-time, rampup-time, rampdown-time, warmup-time, connections
+     printf("%"PRId64" %"PRId64" %"PRId64" %"PRId64" %"PRId64,
+@@ -298,7 +300,7 @@
+     { "execfile",       do_exec_file,        "" },
+     { "checkpoint",     do_checkpoint,       "[delay [period]]" },
+     { "loadsymbol",     do_load_symbol,      "<address> <symbol>" },
+-    { "initparam",      do_initparam,        "" },
++    { "initparam",      do_initparam,        "[key]" },
+     { "sw99param",      do_sw99param,        "" },
+ #ifdef linux
+     { "pin",            do_pin,              "<cpu> <program> [args ...]" }
+diff -r 3648cc90b58e -r 7056641348f3 util/m5/m5op.h
+--- a/util/m5/m5op.h	Tue Oct 27 17:26:18 2015 +0000
++++ b/util/m5/m5op.h	Tue Oct 27 17:28:19 2015 +0000
+@@ -48,7 +48,7 @@
+ 
+ void m5_exit(uint64_t ns_delay);
+ void m5_fail(uint64_t ns_delay, uint64_t code);
+-uint64_t m5_initparam(void);
++uint64_t m5_initparam(uint64_t key);
+ void m5_checkpoint(uint64_t ns_delay, uint64_t ns_period);
+ void m5_reset_stats(uint64_t ns_delay, uint64_t ns_period);
+ void m5_dump_stats(uint64_t ns_delay, uint64_t ns_period);
+diff -r 3648cc90b58e -r 7056641348f3 util/multi/Makefile
+--- a/util/multi/Makefile	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
 @@ -1,63 +0,0 @@
 -#
 -# Copyright (c) 2015 ARM Limited
@@ -4997,373 +4763,10 @@ deleted file mode 100644
 -	@$(CXX) $(CCFLAGS) -c $< -o $@
 -
 --include *.d
-diff --git a/util/multi/gem5-multi.sh b/util/multi/gem5-multi.sh
-deleted file mode 100755
---- a/util/multi/gem5-multi.sh
-+++ /dev/null
-@@ -1,357 +0,0 @@
--#! /bin/bash
--
--#
--# Copyright (c) 2015 ARM Limited
--# All rights reserved
--#
--# The license below extends only to copyright in the software and shall
--# not be construed as granting a license to any other intellectual
--# property including but not limited to intellectual property relating
--# to a hardware implementation of the functionality of the software
--# licensed hereunder.  You may use the software subject to the license
--# terms below provided that you ensure that this notice is replicated
--# unmodified and in its entirety in all distributions of the software,
--# modified or unmodified, in source code or in binary form.
--#
--# Redistribution and use in source and binary forms, with or without
--# modification, are permitted provided that the following conditions are
--# met: redistributions of source code must retain the above copyright
--# notice, this list of conditions and the following disclaimer;
--# redistributions in binary form must reproduce the above copyright
--# notice, this list of conditions and the following disclaimer in the
--# documentation and/or other materials provided with the distribution;
--# neither the name of the copyright holders nor the names of its
--# contributors may be used to endorse or promote products derived from
--# this software without specific prior written permission.
--#
--# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
--# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
--# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
--# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
--# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
--# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
--# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
--# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
--# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
--# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
--# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
--#
--# Authors: Gabor Dozsa
--
--
--# This is a wrapper script to run a multi gem5 simulations.
--# See the usage_func() below for hints on how to use it. Also,
--# there are some examples in the util/multi directory (e.g.
--# see util/multi/test-2nodes-AArch64.sh)
--#
--#
--# Allocated hosts/cores are assumed to be listed in the LSB_MCPU_HOSTS
--# environment variable (which is what LSF does by default).
--# E.g. LSB_MCPU_HOSTS=\"hname1 2 hname2 4\" means we have altogether 6 slots
--# allocated to launch the gem5 processes, 2 of them are on host hname1
--# and 4 of them are on host hname2.
--# If LSB_MCPU_HOSTS environment variable is not defined then we launch all
--# processes on the localhost.
--#
--# Each gem5 process are passed in a unique rank ID [0..N-1] via the kernel
--# boot params. The total number of gem5 processes is also passed in.
--# These values can be used in the boot script to configure the MAC/IP
--# addresses - among other things (see util/multi/bootscript.rcS).
--#
--# Each gem5 process will create an m5out.$GEM5_RANK directory for
--# the usual output files. Furthermore, there will be a separate log file
--# for each ssh session (we use ssh to start gem5 processes) and one for
--# the server. These are called log.$GEM5_RANK and log.switch.
--#
--
--
--# print help
--usage_func ()
--{
--    echo "Usage:$0 [-debug] [-d debug-flags] [-n nnodes] [-f fullsystem] [-s switch] [-p port] [-r rundir] [-c ckptdir] gem5_exe gem5_args"
--    echo "     -debug    : debug mode (start gem5 in gdb)"
--    echo "     debugflags: debug flags for trace based debugging"
--    echo "     nnodes    : number of gem5 processes"
--    echo "     fullsystem: fullsystem config file"
--    echo "     switch    : switch config file"
--    echo "     port      : switch listen port"
--    echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
--    echo "     ckptdir   : dump/restore checkpoints to/from this path. If not specified, current dir will be used"
--    echo "     gem5_exe  : gem5 executable (full path required)"
--    echo "     gem5_args : usual gem5 arguments ( m5 options, config script options)"
--    echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
--}
--
--
--# Process (optional) command line options
--
--while true
--do
--    case "x$1" in
--        x-n|x-nodes)
--            NNODES=$2
--            shift 2
--            ;;
--        x-d|x-debug-flags)
--            GEM5_DEBUG_FLAGS=$2
--            shift 2
--            ;;
--        x-f|x-fullsystem)
--            FS_CONFIG=$2
--            shift 2
--            ;;
--        x-s|x-switch)
--            SWITCH_CONFIG=$2
--            shift 2
--            ;;
--        x-p|x-port)
--            SWITCH_PORT=$2
--            shift 2
--            ;;
--        x-debug)
--            GEM5_DEBUG="-debug"
--            shift 1
--            ;;
--        x-r|x-rundir)
--            RUN_DIR=$2
--            shift 2
--            ;;
--        x-c|x-ckptdir)
--            CKPT_DIR=$2
--            shift 2
--            ;;
--        *)
--            break
--            ;;
--    esac
--done
--
--# The remaining command line args must be the usual gem5 command
--(($# < 2)) && { usage_func; exit -1; }
--GEM5_EXE=$1
--shift
--GEM5_ARGS="$*"
--
--# Default values to use (in case they are not defined as command line options)
--DEFAULT_FS_CONFIG=$M5_PATH/configs/example/fs.py
--DEFAULT_SWITCH_CONFIG=$M5_PATH/configs/example/sw.py
--DEFAULT_SWITCH_PORT=2200
--
--[ -z "$FS_CONFIG" ]  && FS_CONFIG=$DEFAULT_FS_CONFIG
--[ -z "$SWITCH_CONFIG" ]  && SWITCH_CONFIG=$DEFAULT_SWITCH_CONFIG
--[ -z "$SWITCH_PORT" ] && SWITCH_PORT=$DEFAULT_SWITCH_PORT
--[ -z "$NNODES" ]      && NNODES=2
--[ -z "$RUN_DIR" ]      && RUN_DIR=$(pwd)
--[ -z "$CKPT_DIR" ]      && CKPT_DIR=$(pwd)
--! [ -z "$GEM5_DEBUG_FLAGS" ] && GEM5_DEBUG_FLAGS="--debug-flags=$GEM5_DEBUG_FLAGS"
--
--#  Check if all the executables we need exist
--[ -f "$FS_CONFIG" ] || { echo "Switch config ${FS_CONFIG} not found"; exit 1; }
--[ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
--[ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
--# make sure that RUN_DIR exists
--mkdir -p $RUN_DIR > /dev/null 2>&1 
--
--declare -a SSH_PIDS
--declare -a HOSTS
--declare -a NCORES
--
--# Find out which cluster hosts/slots are allocated or
--# use localhost if there is no LSF allocation.
--# We assume that allocated slots are listed in the LSB_MCPU_HOSTS
--# environment variable in the form:
--# host1 nslots1 host2 nslots2 ...
--# (This is what LSF does by default.)
--NH=0
--[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="127.0.0.1 $NNODES"
--host=""
--for hc in $LSB_MCPU_HOSTS
--do
--    if [ "x$host" == "x" ]
--    then
--        host=$hc
--        HOSTS+=($hc)
--    else
--        NCORES+=($hc)
--        ((NH+=hc))
--        host=""
--    fi
--done
--((NNODES==NH)) || { echo "(E) Number of cluster slots ($NH) and gem5 instances ($N) differ"; exit -1; }
--#echo "hosts: ${HOSTS[@]}"
--#echo "hosts: ${NCORES[@]}"
--#echo ${#HOSTS[@]}
--
--
--# function to clean up and abort if something goes wrong
--abort_func ()
--{
--    echo
--    echo "KILLED $(date)"
--    # Try to Kill the server first. That should trigger an exit for all connected
--    # gem5 processes.
--    [ "x$SWITCH_PID" != "x" ] && kill $SWITCH_PID 2>/dev/null
--    sleep 20
--    # (try to) kill gem5 processes - just in case something went wrong with the
--    # server triggered exit
--    bname=$(basename $GEM5_EXE)
--    killall -q -s SIGKILL $bname
--    for h in ${HOSTS[@]}
--    do
--	ssh $h killall -q -s SIGKILL $bname
--    done
--    sleep 5
--    # kill the watchdog
--    [ "x$WATCHDOG_PID" != "x" ] && kill $WATCHDOG_PID 2>/dev/null
--    exit -1
--}
--
--
--# We need a watchdog to trigger full clean up if a gem5 process dies
--watchdog_func ()
--{
--    while true
--    do
--        sleep 30
--        ((NDEAD=0))
--        for p in ${SSH_PIDS[*]}
--        do
--            kill -0 $p 2>/dev/null || ((NDEAD+=1))
--        done
--        kill -0 $SWITCH_PID || ((NDEAD+=1))
--        if ((NDEAD>0))
--        then
--            # we may be in the middle of an orderly termination,
--            # give it some time to complete before reporting abort
--            sleep 60
--            echo -n "(I) (some) gem5 process(es) exited"
--            abort_func
--        fi
--    done
--}
--
--# This function launches the gem5 processes. The only purpose is to enable
--# launching gem5 processes under gdb control for debugging
--start_func ()
--{
--      local N=$1
--      local HOST=$2
--      local ENV_ARGS=$3
--      shift 3
--      if [ "x$GEM5_DEBUG" != "x" ]
--      then
--	      echo "DEBUG starting terminal..."
--	      MY_ARGS="$@"
--	      xterm -e "gdb --args $MY_ARGS" &
--      else
--        ssh $HOST $ENV_ARGS "$@" &> $RUN_DIR/log.$N &
--      fi
--}
--
--connected ()
--{
--    FILE=$1
--    STRING=$2
--    echo -n "waiting for $3 to start "
--    while : ;
--    do
--        kill -0 $4 || { echo "Failed to start $3"; exit -1; }
--        [[ -f "$FILE" ]] &&                                                   \
--        grep -q "$STRING" "$FILE" &&                                          \
--        echo -e "\nnode #$3 started" &&                                       \
--        break
--
--        sleep 2
--        echo -n "."
--    done
--}
--
--# Trigger full clean up in case we are being killed by external signal
--trap 'abort_func' INT TERM
--
--# env args to be passed explicitly to gem5 processes started via ssh
--ENV_ARGS="LD_LIBRARY_PATH=$LD_LIBRARY_PATH M5_PATH=$M5_PATH"
--
--#cleanup log files before starting gem5 processes
--rm $RUN_DIR/log.switch > /dev/null 2>&1
--
--# make sure that CKPT_DIR exists
--mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1 
--# launch switch gem5
--echo "launch switch gem5 process ..."
--$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
--             $GEM5_DEBUG_FLAGS                                                \
--             $SWITCH_CONFIG                                                   \
--             $GEM5_ARGS                                                       \
--             --checkpoint-dir=$CKPT_DIR/m5out.switch                          \
--             --is-switch                                                      \
--             --multi-size=$NNODES                                             \
--             --multi-server-port=$SWITCH_PORT &> $RUN_DIR/log.switch &
--SWITCH_PID=$!
--
--# block here till switch process starts
--connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SWITCH_PID
--LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
--
--IFS=' ' read -ra ADDR <<< "$LINE"
--# acutal port that switch is listening on may be different 
--# from what we specified if the port was busy
--SWITCH_PORT=${ADDR[5]}
--
--# Now launch all the gem5 processes with ssh.
--echo "START $(date)"
--n=0
--for ((i=0; i < ${#HOSTS[@]}; i++))
--do
--    h=${HOSTS[$i]}
--    for ((j=0; j < ${NCORES[i]}; j++))
--    do
--        #cleanup log files before starting gem5 processes
--        rm $RUN_DIR/log.$n > /dev/null 2>&1
--        # make sure that CKPT_DIR exists
--        mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
--	    echo "starting gem5 on $h ..."
--	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n           \
--        $GEM5_DEBUG_FLAGS                                                     \
--        $FS_CONFIG                                                            \
--        $GEM5_ARGS                                                            \
--        --checkpoint-dir=$CKPT_DIR/m5out.$n                                   \
--	    --multi                                                               \
--	    --multi-rank=$n                                                       \
--	    --multi-size=$NNODES                                                  \
--        --multi-server-name=${HOSTS[0]}                                       \
--        --multi-server-port=$SWITCH_PORT
--	    SSH_PIDS[$n]=$!
--        if [ "x$GEM5_DEBUG" == "x" ]
--        then
--            connected $RUN_DIR/log.$n "Listening" $j ${SSH_PIDS[$n]}
--        fi
--	    ((n+=1))
--    done
--done
--
--# Wait here if it is a debug session
--[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SWITCH_PID; exit -1; }
--
--# start watchdog to trigger complete abort (after a grace period) if any
--# gem5 process dies
--watchdog_func &
--WATCHDOG_PID=$!
--
--# wait for exit statuses
--((NFAIL=0))
--for p in ${SSH_PIDS[*]}
--do
--    wait $p || ((NFAIL+=1))
--done
--wait $SWITCH_PID || ((NFAIL+=1))
--
--# all done, let's terminate the watchdog
--kill $WATCHDOG_PID 2>/dev/null
--
--if ((NFAIL==0))
--then
--    echo "EXIT $(date)"
--else
--    echo "ABORT $(date)"
--fi
-diff --git a/util/multi/tcp_server.cc b/util/multi/tcp_server.cc
-deleted file mode 100644
---- a/util/multi/tcp_server.cc
-+++ /dev/null
-@@ -1,517 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 util/multi/tcp_server.cc
+--- a/util/multi/tcp_server.cc	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,463 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -5416,10 +4819,8 @@ deleted file mode 100644
 -#include <sys/types.h>
 -#include <unistd.h>
 -
--#include <csignal>
 -#include <cstdio>
 -#include <cstdlib>
--#include <limits>
 -
 -#include "tcp_server.hh"
 -
@@ -5449,11 +4850,9 @@ deleted file mode 100644
 -
 -TCPServer *TCPServer::instance = nullptr;
 -
--TCPServer::Channel::Channel() :
--    fd(-1), isSync(false), connected(false), needExit(false), needCkpt(false)
+-TCPServer::Channel::Channel() : fd(-1), isAlive(false), state(SyncState::idle)
 -{
 -    MultiHeaderPkt::clearAddress(address);
--    newAddress.second = false;
 -}
 -
 -unsigned
@@ -5483,32 +4882,23 @@ deleted file mode 100644
 -        panic("write() failed");
 -}
 -
--void
--TCPServer::Channel::updateAddress(const AddressType &new_address)
+-void TCPServer::Channel::updateAddress(const AddressType &new_address)
 -{
 -    // check if the known address has changed (e.g. the client reconfigured
 -    // its Ethernet NIC)
 -    if (MultiHeaderPkt::isAddressEqual(address, new_address))
 -        return;
 -
--    MultiHeaderPkt::copyAddress(newAddress.first, new_address);
--    newAddress.second = true;
--}
--
--void
--TCPServer::Channel::updateAddressMap()
--{
--    assert(newAddress.second);
 -    // So we have to update the address. Note that we always
 -    // store the same address as key in the map but the ordering
 -    // may change so we need to erase and re-insert it again.
--    auto m = TCPServer::instance->addressMap.find(&address);
--    if (m != TCPServer::instance->addressMap.end()) {
--        TCPServer::instance->addressMap.erase(m);
+-    auto info = TCPServer::instance->addressMap.find(&address);
+-    if (info != TCPServer::instance->addressMap.end()) {
+-        TCPServer::instance->addressMap.erase(info);
 -    }
--    MultiHeaderPkt::copyAddress(address, newAddress.first);
+-
+-    MultiHeaderPkt::copyAddress(address, new_address);
 -    TCPServer::instance->addressMap[&address] = this;
--    newAddress.second = false;
 -}
 -
 -void
@@ -5516,8 +4906,6 @@ deleted file mode 100644
 -{
 -    ssize_t n;
 -    Header hdr_pkt;
--
--    assert (connected);
 -
 -    n = recvRaw(&hdr_pkt, sizeof(hdr_pkt));
 -
@@ -5531,42 +4919,62 @@ deleted file mode 100644
 -        updateAddress(hdr_pkt.srcAddress);
 -        TCPServer::instance->xferData(hdr_pkt, *this);
 -    } else {
--        processCmd(hdr_pkt);
+-        processCmd(hdr_pkt.msgType, hdr_pkt.sendTick);
 -    }
 -}
 -
--void
--TCPServer::Channel::processCmd(Header &hdr_pkt)
+-void TCPServer::Channel::processCmd(MsgType cmd, Tick send_tick)
 -{
--    switch (hdr_pkt.msgType) {
--      case MsgType::cmdSyncReq:
--        assert(isSync == false);
--        isSync = true;
--        TCPServer::instance->syncProgress(
--            hdr_pkt.sendTick,
--            hdr_pkt.syncRepeat,
--            hdr_pkt.sameTick,
--            rank);
+-    switch (cmd) {
+-      case MsgType::cmdAtomicSyncReq:
+-        DPRINTF(debugSync,"Atomic sync request (rank:%d)\n",rank);
+-        assert(state == SyncState::idle);
+-        state = SyncState::atomic;
+-        TCPServer::instance->syncTryComplete(SyncState::atomic,
+-                                             MsgType::cmdAtomicSyncAck);
 -        break;
--      case MsgType::cmdExitReq:
--        DPRINTF(debugSync, "EXIT request (rank %d tick %lu)\n",
--                rank, hdr_pkt.sendTick);
--        if (needExit)
--            inform("Multiple exit request (rank %d tick %lu)\n",
--                   rank, hdr_pkt.sendTick);
--        else
--            TCPServer::instance->numExitReq++;
--        needExit = true;
+-      case MsgType::cmdPeriodicSyncReq:
+-        DPRINTF(debugPeriodic,"PERIODIC sync request (at %ld)\n",send_tick);
+-        // sanity check
+-        if (TCPServer::instance->periodicSyncTick() == 0) {
+-            TCPServer::instance->periodicSyncTick(send_tick);
+-        } else if ( TCPServer::instance->periodicSyncTick() != send_tick) {
+-            panic("Out of order periodic sync request - rank:%d "
+-                  "(send_tick:%ld ongoing:%ld)", rank, send_tick,
+-                  TCPServer::instance->periodicSyncTick());
+-        }
+-        switch (state) {
+-          case SyncState::idle:
+-            state = SyncState::periodic;
+-            TCPServer::instance->syncTryComplete(SyncState::periodic,
+-                                                 MsgType::cmdPeriodicSyncAck);
+-            break;
+-          case SyncState::asyncCkpt:
+-            // An async ckpt request has already been sent to this client and
+-            // that will interrupt this periodic sync. We can simply drop this
+-            // message.
+-            break;
+-          default:
+-            panic("Unexpected state for periodic sync request (rank:%d)",
+-                rank);
+-            break;
+-        }
 -        break;
--      case MsgType::cmdCkptReq:
--        DPRINTF(debugSync, "CKPT request (rank %d tick %lu)\n",
--                rank, hdr_pkt.sendTick);
--        if (needCkpt)
--            inform("Multiple ckpt request (rank:%d tick:%lu\n",
--                   rank, hdr_pkt.sendTick);
--        else
--            TCPServer::instance->numCkptReq++;
--        needCkpt = true;
+-      case MsgType::cmdCkptSyncReq:
+-        DPRINTF(debugSync, "CKPT sync request (rank:%d)\n",rank);
+-        switch (state) {
+-          case SyncState::idle:
+-            TCPServer::instance->ckptPropagate(*this);
+-            // we fall through here to complete #clients==1 case
+-          case SyncState::asyncCkpt:
+-            state = SyncState::ckpt;
+-            TCPServer::instance->syncTryComplete(SyncState::ckpt,
+-                                                 MsgType::cmdCkptSyncAck);
+-            break;
+-          default:
+-            panic("Unexpected state for ckpt sync request (rank:%d)", rank);
+-            break;
+-        }
 -        break;
 -      default:
 -        panic("Unexpected header packet (rank:%d)",rank);
@@ -5576,14 +4984,7 @@ deleted file mode 100644
 -
 -TCPServer::TCPServer(unsigned clients_num,
 -                     unsigned listen_port,
--                     int timeout_in_sec) :
--    nextSyncRepeat(std::numeric_limits<Tick>::max()),
--    maxSyncReqTick(0),
--    isSameTickSync(false),
--    numSyncReq(0),
--    numCkptReq(0),
--    numExitReq(0),
--    numConnectedClients(0)
+-                     int timeout_in_sec)
 -{
 -    assert(instance == nullptr);
 -    construct(clients_num, listen_port, timeout_in_sec);
@@ -5641,16 +5042,8 @@ deleted file mode 100644
 -        new_pollfd.revents = 0;
 -        clientsPollFd.push_back(new_pollfd);
 -        new_channel.fd = new_sock;
--        new_channel.connected = true;
--        // Get rank from the client
+-        new_channel.isAlive = true;
 -        new_channel.recvRaw(&new_channel.rank, sizeof(new_channel.rank));
--        // Get initial network address
--        new_channel.recvRaw(&new_channel.newAddress.first,
--                            sizeof(new_channel.newAddress.first));
--        new_channel.newAddress.second =
--            !MultiHeaderPkt::isAddressEqual(new_channel.address,
--                                            new_channel.newAddress.first);
--
 -        clientsChannel.push_back(new_channel);
 -
 -        DPRINTF(debugSetup, "New client connection addr:%u port:%hu rank:%d\n",
@@ -5667,16 +5060,16 @@ deleted file mode 100644
 -TCPServer::run()
 -{
 -    int nfd;
--    numConnectedClients = clientsPollFd.size();
+-    unsigned num_active_clients = clientsPollFd.size();
 -
 -    DPRINTF(debugSetup, "Entering run() loop\n");
--    while (numConnectedClients > 0) {
+-    while (num_active_clients ==  clientsPollFd.size()) {
 -        nfd = poll(&clientsPollFd[0], clientsPollFd.size(), -1);
 -        if (nfd == -1)
 -            panic("poll() failed:%s", strerror(errno));
 -
 -        for (unsigned i = 0, n = 0;
--             i < clientsPollFd.size() && (signed)n < nfd && numConnectedClients;
+-             i < clientsPollFd.size() && (signed)n < nfd;
 -             i++) {
 -            struct pollfd &pfd = clientsPollFd[i];
 -            if (pfd.revents) {
@@ -5686,39 +5079,23 @@ deleted file mode 100644
 -                    clientsChannel[i].headerPktIn();
 -                }
 -                if (pfd.revents & POLLRDHUP) {
--                    // One gem5 process exited or aborted.
+-                    // One gem5 process exited or aborted. Either way, we
+-                    // assume the full simulation should stop now (either
+-                    // because m5 exit was called or a serious error
+-                    // occurred.) So we quit the run loop here and close all
+-                    // sockets to notify the remaining peer gem5 processes.
 -                    pfd.events = 0;
--                    if (!processExitEvent(clientsChannel[i])) {
--                        numConnectedClients = 0;
--                        break;
--                    } else {
--                        numConnectedClients--;
--                    }
+-                    clientsChannel[i].isAlive = false;
+-                    num_active_clients--;
+-                    DPRINTF(debugSetup, "POLLRDHUP event");
 -                }
 -                n++;
+-                if ((signed)n == nfd)
+-                    break;
 -            }
 -        }
 -    }
 -    DPRINTF(debugSetup, "Exiting run() loop\n");
--}
--
--bool
--TCPServer::processExitEvent(Channel &ch)
--{
--
--    DPRINTF(debugSetup, "POLLRDHUP event (rank:%d, needExit:%d)\n",
--            ch.rank, (int)ch.needExit);
--    assert (ch.connected);
--
--    // Sanity check
--    for (auto &c : clientsChannel) {
--        if ((ch.needExit != c.needExit) || c.isSync || c.needCkpt)
--            panic("Client %d closed connection unexpectedly whilst client %d"
--                  "is active (needExit %d isSync %d needCkpt %d)",
--                  ch.rank, c.rank, c.needExit, c.isSync, c.needCkpt);
--    }
--    ch.connected = false;
--    return ch.needExit;
 -}
 -
 -void
@@ -5755,7 +5132,7 @@ deleted file mode 100644
 -        dst_info == addressMap.end()) {
 -        unsigned n = 0;
 -        for (auto const &c: clientsChannel) {
--            if (c.connected && (&c != &src)) {
+-            if (c.isAlive && &c!=&src) {
 -                c.sendRaw(&hdr_pkt, sizeof(hdr_pkt));
 -                c.sendRaw(packetBuffer, hdr_pkt.dataPacketLength);
 -                n++;
@@ -5767,94 +5144,68 @@ deleted file mode 100644
 -    } else {
 -        // It is a unicast address with a known destination
 -        Channel *dst = dst_info->second;
--        if ( dst->connected) {
+-        if (dst->isAlive) {
 -            dst->sendRaw(&hdr_pkt, sizeof(hdr_pkt));
 -            dst->sendRaw(packetBuffer, hdr_pkt.dataPacketLength);
--            DPRINTF(debugPkt, "Unicast packet sent (from/to rank %d/%d)\n",
--                    src.rank, dst->rank);
+-            DPRINTF(debugPkt, "Unicast packet sent (to rank %d)\n",dst->rank);
 -        } else {
--            inform("Unicast packet dropped - destination exited "
--                   "(from/to rank %d/%d\n", src.rank, dst->rank);
+-            inform("Unicast packet dropped (destination exited)\n");
 -        }
 -    }
 -}
 -
 -void
--TCPServer::syncProgress(Tick send_tick, Tick next_sync_repeat,
--                        bool same_tick, unsigned rank)
+-TCPServer::syncTryComplete(SyncState st, MsgType ack)
 -{
--    DPRINTF(same_tick ? debugPeriodic : debugSync,
--            "Sync request rank:%d tick:%lu\n", rank, send_tick);
--
--    assert(numSyncReq == 0 || (same_tick == isSameTickSync));
--    assert(!same_tick || (numSyncReq == 0) ||
--           (isSameTickSync && (maxSyncReqTick == send_tick)));
--    isSameTickSync = same_tick;
--    if (maxSyncReqTick < send_tick)
--        maxSyncReqTick = send_tick;
--
--    if (next_sync_repeat < nextSyncRepeat) {
--        nextSyncRepeat = next_sync_repeat;
--        inform("Periodic sync repeat is adjusted to %lu\n", nextSyncRepeat);
+-    // Check if the barrieris complete. If so then notify all the clients.
+-    for (auto &c : clientsChannel) {
+-        if (c.isAlive && (c.state != st)) {
+-            // sync not complete yet, stop here
+-            return;
+-        }
 -    }
--    assert(numSyncReq < numConnectedClients);
--    numSyncReq++;
--    if (numSyncReq < numConnectedClients)
--        return;
--
 -    // Sync complete, send out the acks
 -    MultiHeaderPkt::Header hdr_pkt;
--    hdr_pkt.msgType = MsgType::cmdSyncAck;
--    hdr_pkt.maxSyncReqTick = maxSyncReqTick;
--    hdr_pkt.syncRepeat = nextSyncRepeat;
--    assert(numCkptReq <= numConnectedClients);
--
--    bool coll_ckpt = (numCkptReq == numConnectedClients);
--    if (coll_ckpt) {
--        hdr_pkt.doCkpt = true;
--        numCkptReq = 0;
--    } else {
--        hdr_pkt.doCkpt = false;
--    }
--
--    assert(numExitReq <= numConnectedClients);
--    if (numExitReq == numConnectedClients) {
--        hdr_pkt.doExit =  true;
--        numExitReq = 0;
--    } else {
--        hdr_pkt.doExit = false;
--    }
--
+-    hdr_pkt.msgType = ack;
 -    for (auto &c : clientsChannel) {
--        if (c.connected) {
+-        if (c.isAlive) {
 -            c.sendRaw(&hdr_pkt, sizeof(hdr_pkt));
--            c.isSync = false;
--            if (coll_ckpt)
--                c.needCkpt = false;
--            // Update the address map at each peridoc sync if the channel has
--            // new address
--            if (c.newAddress.second == true && isSameTickSync)
--                c.updateAddressMap();
+-            c.state = SyncState::idle;
 -        }
 -    }
--    DPRINTF(isSameTickSync ? debugPeriodic : debugSync, "Sync COMPLETE\n");
--    numSyncReq = 0;
--    maxSyncReqTick = 0;
--    isSameTickSync = false;
+-    // Reset periodic send tick
+-    _periodicSyncTick = 0;
+-    DPRINTF(st == SyncState::periodic ? debugPeriodic : debugSync,
+-            "Sync COMPLETE\n");
 -}
 -
 -void
--sigtermHandler(int sig)
+-TCPServer::ckptPropagate(Channel &ch)
 -{
--    if (TCPServer::getInstance() != nullptr)
--        delete TCPServer::getInstance();
--    panic("Got SIGTERM\n");
+-    // Channel ch got a ckpt request that needs to be propagated to the other
+-    // clients
+-    MultiHeaderPkt::Header hdr_pkt;
+-    hdr_pkt.msgType = MsgType::cmdCkptSyncReq;
+-    for (auto &c : clientsChannel) {
+-        if (c.isAlive && (&c != &ch)) {
+-            switch (c.state) {
+-              case SyncState::idle:
+-              case SyncState::periodic:
+-                c.sendRaw(&hdr_pkt, sizeof(hdr_pkt));
+-                c.state = SyncState::asyncCkpt;
+-                break;
+-              default:
+-                panic("Unexpected state for ckpt sync request propagation "
+-                      "(rank:%d)\n",c.rank);
+-                break;
+-            }
+-        }
+-    }
 -}
 -
--int
--main(int argc, char *argv[])
+-int main(int argc, char *argv[])
 -{
--    TCPServer *server = nullptr;
+-    TCPServer *server;
 -    int clients_num = -1, listen_port = -1;
 -    int first_arg = 1, timeout_in_sec = 60;
 -
@@ -5868,8 +5219,6 @@ deleted file mode 100644
 -        panic("We need two command line args (number of clients and tcp listen"
 -              " port");
 -
--    signal(SIGTERM, sigtermHandler);
--
 -    clients_num = atoi(argv[first_arg]);
 -    listen_port = atoi(argv[first_arg + 1]);
 -
@@ -5881,11 +5230,10 @@ deleted file mode 100644
 -
 -    return 0;
 -}
-diff --git a/util/multi/tcp_server.hh b/util/multi/tcp_server.hh
-deleted file mode 100644
---- a/util/multi/tcp_server.hh
-+++ /dev/null
-@@ -1,282 +0,0 @@
+diff -r 3648cc90b58e -r 7056641348f3 util/multi/tcp_server.hh
+--- a/util/multi/tcp_server.hh	Tue Oct 27 17:26:18 2015 +0000
++++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,254 +0,0 @@
 -/*
 - * Copyright (c) 2015 ARM Limited
 - * All rights reserved
@@ -5965,6 +5313,7 @@ deleted file mode 100644
 -#include <map>
 -#include <vector>
 -
+-#include "dev/etherpkt.hh"
 -#include "dev/multi_packet.hh"
 -
 -/**
@@ -5980,6 +5329,9 @@ deleted file mode 100644
 -    typedef MultiHeaderPkt::MsgType MsgType;
 -
 -  private:
+-
+-    enum
+-    class SyncState { periodic, ckpt, asyncCkpt, atomic, idle };
 -    /**
 -     * The Channel class encapsulates all the information about a client
 -     * and its current status.
@@ -5988,6 +5340,11 @@ deleted file mode 100644
 -    {
 -      private:
 -        /**
+-         * The MAC address of the client.
+-         */
+-        AddressType address;
+-
+-        /**
 -         * Update the client MAC address. It is called every time a new data
 -         * packet is to come in.
 -         */
@@ -5995,7 +5352,8 @@ deleted file mode 100644
 -        /**
 -         * Process an incoming command message.
 -         */
--        void processCmd(Header &hdr_packet);
+-        void processCmd(MultiHeaderPkt::MsgType cmd, Tick send_tick);
+-
 -
 -      public:
 -        /**
@@ -6003,42 +5361,23 @@ deleted file mode 100644
 -         */
 -        int fd;
 -        /**
--         * Flag for on-going sync
+-         * Is client connected?
 -         */
--        bool isSync;
+-        bool isAlive;
 -        /**
--         *  Multi rank of the client
+-         * Current state of the channel wrt. multi synchronisation.
+-         */
+-        SyncState state;
+-        /**
+-         * Multi rank of the client
 -         */
 -        unsigned rank;
--        /**
--         * Flag to is true if client is connected
--         */
--        bool connected;
--        /**
--         * Flag to is true if client has requested exit
--         */
--        bool needExit;
--        /**
--         * Flag to is true if client has requested checkppint
--         */
--        bool needCkpt;
--        /**
--         * Current network address of the client
--         */
--        AddressType address;
--        /**
--         * New network address of the client.
--         *
--         * @note For the sake of deterministic runs, we do not use an updated
--         * address until the next periodic sync completes. That avoids race
--         * conditions regarding broadcast/unicast data packets.
--         */
--        typedef std::pair<AddressType,bool> AddressInfo;
--        AddressInfo newAddress;
 -
 -      public:
 -        Channel();
 -        ~Channel () {}
+-
+-
 -        /**
 -         * Receive and process the next incoming header packet.
 -         */
@@ -6051,12 +5390,6 @@ deleted file mode 100644
 -         */
 -        void sendRaw(const void *data, unsigned size) const;
 -        /**
--         * Register an address change in the address map.
--         *
--         * @note This method is only called when a periodic sync completes
--         */
--        void updateAddressMap();
--        /**
 -         * Receive raw data from the connected client.
 -         *
 -         * @param buf The buffer to store the incoming data into.
@@ -6066,6 +5399,7 @@ deleted file mode 100644
 -         */
 -        unsigned recvRaw(void *buf, unsigned size) const;
 -    };
+-
 -    /**
 -     * The array of socket descriptors needed by the poll() system call.
 -     */
@@ -6074,6 +5408,8 @@ deleted file mode 100644
 -     * Array holding all clients info.
 -     */
 -    std::vector<Channel> clientsChannel;
+-
+-
 -    /**
 -     * We use a map to select the target client based on the destination
 -     * MAC address.
@@ -6086,51 +5422,29 @@ deleted file mode 100644
 -        }
 -    };
 -    std::map<const AddressType *, Channel *, AddressCompare> addressMap;
+-
 -    /**
 -     * As we dealt with only one message at a time, we can allocate and re-use
 -     * a single packet buffer (to hold any incoming data packet).
 -     */
 -    uint8_t packetBuffer[MAX_ETH_PACKET_LENGTH];
 -    /**
--     * The repeat value for the next periodic sync
+-     * Send tick of the current periodic sync. It is used for sanity check.
 -     */
--    Tick nextSyncRepeat;
--    /**
--     * Max send tick of the current sync.
--     */
--    Tick maxSyncReqTick;
--    /*
--     * Is the current sync must happen at the same tick in clients?
--     */
--    bool isSameTickSync;
--    /*
--     * Number of current sync requets.
--     */
--    unsigned numSyncReq;
--    /*
--     * Number of current ckpt requests.
--     */
--    unsigned numCkptReq;
--    /*
--     * Number of current exit requests.
--     */
--    unsigned numExitReq;
--    /*
--     * Number of connected clients.
--     */
--    unsigned numConnectedClients;
+-    Tick _periodicSyncTick;
 -    /**
 -     * The singleton server object.
 -     */
 -    static TCPServer *instance;
+-
 -    /**
 -     * Set up the socket connections to all the clients.
 -     *
 -     * @param listen_port The port we are listening on for new client
 -     * connection requests.
 -     * @param nclients The number of clients to connect to.
--     * @param timeout Timeout in sec to complete the setup phase (i.e. all gem5
--     * establish socket connections)
+-     * @param timeout Timeout in sec to complete the setup phase
+-     * (i.e. all gem5 establish socket connections)
 -     */
 -    void construct(unsigned listen_port, unsigned nclients, int timeout);
 -    /**
@@ -6142,17 +5456,27 @@ deleted file mode 100644
 -     */
 -    void xferData(const Header &hdr, const Channel &ch);
 -    /**
--     * Process a new sync request.
+-     * Check if the current round of a synchronisation is completed and notify
+-     * the clients if it is so.
+-     *
+-     * @param st The state all channels should have if sync is complete.
+-     * @param ack The type of ack message to send out if the sync is compete.
 -     */
--    void syncProgress(Tick send_tick, Tick sync_repeat, bool is_periodic, unsigned rank);
+-    void syncTryComplete(SyncState st, MultiHeaderPkt::MsgType ack);
 -    /**
--     * Process a client exit event
+-     * Broadcast a request for checkpoint sync.
 -     *
--     * @param ch The channel on which the client exit event occured.
--     *
--     * @return False if this event must trigger a global exit.
+-     * @param ch The source channel of the checkpoint sync request.
 -     */
--    bool processExitEvent(Channel &ch);
+-    void ckptPropagate(Channel &ch);
+-    /**
+-     * Setter for current periodic send tick.
+-     */
+-    void periodicSyncTick(Tick t) { _periodicSyncTick = t; }
+-    /**
+-     * Getter for current periodic send tick.
+-     */
+-    Tick periodicSyncTick() { return _periodicSyncTick; }
 -
 -  public:
 -
@@ -6163,246 +5487,4 @@ deleted file mode 100644
 -     * The main server loop that waits for and processes incoming messages.
 -     */
 -    void run();
--    /**
--     * The singleton server object.
--     */
--  static TCPServer *getInstance() { return instance; }
 -};
-diff --git a/util/multi/test/bootscript.rcS b/util/multi/test/bootscript.rcS
-deleted file mode 100644
---- a/util/multi/test/bootscript.rcS
-+++ /dev/null
-@@ -1,149 +0,0 @@
--#!/bin/bash
--
--
--#
--# Copyright (c) 2015 ARM Limited
--# All rights reserved
--#
--# The license below extends only to copyright in the software and shall
--# not be construed as granting a license to any other intellectual
--# property including but not limited to intellectual property relating
--# to a hardware implementation of the functionality of the software
--# licensed hereunder.  You may use the software subject to the license
--# terms below provided that you ensure that this notice is replicated
--# unmodified and in its entirety in all distributions of the software,
--# modified or unmodified, in source code or in binary form.
--#
--# Redistribution and use in source and binary forms, with or without
--# modification, are permitted provided that the following conditions are
--# met: redistributions of source code must retain the above copyright
--# notice, this list of conditions and the following disclaimer;
--# redistributions in binary form must reproduce the above copyright
--# notice, this list of conditions and the following disclaimer in the
--# documentation and/or other materials provided with the distribution;
--# neither the name of the copyright holders nor the names of its
--# contributors may be used to endorse or promote products derived from
--# this software without specific prior written permission.
--#
--# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
--# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
--# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
--# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
--# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
--# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
--# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
--# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
--# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
--# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
--# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
--#
--# Authors: Gabor Dozsa
--#
--#
--# This is an example boot script to use for multi gem5 runs. The important
--# task here is to extract the rank and size information through the m5
--# initparam utility and use those to configure MAC/IP addresses and hostname.
--#
--# You are expected to customize this scipt for your needs (e.g. change
--# the command at the end of the scipt to run your tests/workloads.
--
--source /root/.bashrc
--echo "bootscript.rcS is running"
--
--# Retrieve multi-gem5 rank and size parameters using magic keys
--MY_RANK=$(/sbin/m5 initparam 1234)
--[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
--MY_SIZE=$(/sbin/m5 initparam 1235)
--[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
--
--
--echo "***** Start boot script! *****"
--if [ "${RUNSCRIPT_VAR+set}" != set ]
--then
--    # Signal our future self that it's safe to continue
--    echo "RUNSCRIPT_VAR not set! Setting it ..."
--    export RUNSCRIPT_VAR=1
--else
--    if [ "$MY_RANK" == "0" ]
--    then
--        # We've already executed once, so we should exit
--        echo "calling m5 exit!"
--        /sbin/m5 exit
--    else
--        echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
--        echo "Else part - Loading new script..."
--        /sbin/m5 readfile > /tmp/runscript1.sh
--        chmod 755 /tmp/runscript1.sh
--
--        # Execute the new runscript
--        if [ -s /tmp/runscript1.sh ]
--        then
--            #/system/bin/sh /data/runscript1.sh
--            echo "Else part - executing newly loaded script ...!"
--            /bin/bash /tmp/runscript1.sh
--        else 
--            echo "Else part - Script not specified."
--            echo "Else part - Exiting..." 
--            /sbin/m5 exit
--        fi
--    fi
--fi
--
--/bin/hostname node${MY_RANK}
--
--# Keep MAC address assignment simple for now ...
--(($MY_RANK > 97)) && { echo "(E) Rank must be less than 98"; /sbin/m5 abort; }
--((MY_ADDR = MY_RANK + 2))
--if (($MY_ADDR < 10))
--then
--    MY_ADDR_PADDED=0${MY_ADDR}
--else
--    MY_ADDR_PADDED=${MY_ADDR}
--fi
--
--/sbin/ifconfig eth0 hw ether 00:90:00:00:00:${MY_ADDR_PADDED}
--/sbin/ifconfig eth0 192.168.0.${MY_ADDR} netmask 255.255.255.0 up
--
--/sbin/ifconfig -a
--
--echo "Hello from $MY_RANK of $MY_SIZE"
--
--
--if [ "$MY_RANK" == "0" ]
--then
--    # Trigger an immediate checkpoint at the next sync (by passing a non-zero
--    # delay param to m5 ckpt)
--    /sbin/m5 checkpoint 1
--else
--    # do nothing, just iterate through the script
--    echo "do nothing, just iterate through the script ..."
--fi
--
--#THIS IS WHERE EXECUTION BEGINS FROM AFTER RESTORING FROM CKPT
--if [ "$RUNSCRIPT_VAR" -eq 1 ]
--then
--
--    # Signal our future self not to recurse infinitely
--    export RUNSCRIPT_VAR=2
--    echo "3. RUNSCRIPT_VAR is $RUNSCRIPT_VAR"
--
--    # Read the script for the checkpoint restored execution
--    echo "Loading new script..."
--    /sbin/m5 readfile > /tmp/runscript1.sh
--    chmod 755 /tmp/runscript1.sh
--
--    # Execute the new runscript
--    if [ -s /tmp/runscript1.sh ]
--    then
--        #/system/bin/sh /data/runscript1.sh
--        echo "executing newly loaded script ..."
--        /bin/bash /tmp/runscript1.sh
--
--    else
--        echo "Script not specified. Dropping into shell..."
--    fi
--
--fi
--
--echo "Fell through script. Exiting..."
--/sbin/m5 exit
-diff --git a/util/multi/test/test-2nodes-AArch64.sh b/util/multi/test/test-2nodes-AArch64.sh
-deleted file mode 100755
---- a/util/multi/test/test-2nodes-AArch64.sh
-+++ /dev/null
-@@ -1,79 +0,0 @@
--#! /bin/bash
--
--#
--# Copyright (c) 2015 ARM Limited
--# All rights reserved
--#
--# The license below extends only to copyright in the software and shall
--# not be construed as granting a license to any other intellectual
--# property including but not limited to intellectual property relating
--# to a hardware implementation of the functionality of the software
--# licensed hereunder.  You may use the software subject to the license
--# terms below provided that you ensure that this notice is replicated
--# unmodified and in its entirety in all distributions of the software,
--# modified or unmodified, in source code or in binary form.
--#
--# Redistribution and use in source and binary forms, with or without
--# modification, are permitted provided that the following conditions are
--# met: redistributions of source code must retain the above copyright
--# notice, this list of conditions and the following disclaimer;
--# redistributions in binary form must reproduce the above copyright
--# notice, this list of conditions and the following disclaimer in the
--# documentation and/or other materials provided with the distribution;
--# neither the name of the copyright holders nor the names of its
--# contributors may be used to endorse or promote products derived from
--# this software without specific prior written permission.
--#
--# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
--# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
--# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
--# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
--# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
--# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
--# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
--# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
--# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
--# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
--# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
--#
--# Authors: Gabor Dozsa
--#
--#
--# This is an example script to start a multi gem5 simulations using
--# two AArch64 systems. It is also uses the example
--# multi gem5 bootscript util/multi/test/bootscript.rcS that will run the
--# linux ping command to check if we can see the peer system connected via
--# the simulated Ethernet link.
--
--GEM5_DIR=$(pwd)/$(dirname $0)/../../..
--
--#M5_PATH=$HOME/GEM5/public_dist
--#export M5_PATH
--
--
--
--IMG=$M5_PATH/disks/aarch64-ubuntu-trusty-headless.img
--VMLINUX=$M5_PATH/binaries/vmlinux.aarch64.20140821
--DTB=$M5_PATH/binaries/vexpress.aarch64.20140821.dtb
--
--SYS_CONFIG=$GEM5_DIR/configs/example/fs.py
--#SYS_CONFIG=$HOME/GEM5/BRANDNEW/gem5-obj/configs/hpc/RealViewHPC.py
--GEM5_EXE=$GEM5_DIR/build/ARM/gem5.opt
--
--BOOT_SCRIPT=$GEM5_DIR/util/multi/test/bootscript.rcS
--GEM5_MULTI_SH=$GEM5_DIR/util/multi/gem5-multi.sh
--
--DEBUG_FLAGS="-d MultiEthernet,MultiEthernetPkt"
--#CHKPT_RESTORE="-r1"
--
--NNODES=2
--
--$GEM5_MULTI_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE   \
--    --cpu-type=atomic                                          \
--    --num-cpus=1                                               \
--    --machine-type=VExpress_EMM64                              \
--    --disk-image=$IMG                                          \
--    --kernel=$VMLINUX                                          \
--    --dtb-filename=$DTB                                        \
--    --script=$BOOT_SCRIPT                                      \
--    $CHKPT_RESTORE
