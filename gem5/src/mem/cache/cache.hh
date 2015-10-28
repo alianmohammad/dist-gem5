@@ -334,9 +334,9 @@ class Cache : public BaseCache
     PacketPtr cleanEvictBlk(CacheBlk *blk);
 
 
-    void memWriteback();
-    void memInvalidate();
-    bool isDirty() const;
+    void memWriteback() override;
+    void memInvalidate() override;
+    bool isDirty() const override;
 
     /**
      * Cache block visitor that writes back dirty cache blocks using
@@ -410,11 +410,11 @@ class Cache : public BaseCache
         return tags->findBlock(addr, is_secure);
     }
 
-    bool inCache(Addr addr, bool is_secure) const {
+    bool inCache(Addr addr, bool is_secure) const override {
         return (tags->findBlock(addr, is_secure) != 0);
     }
 
-    bool inMissQueue(Addr addr, bool is_secure) const {
+    bool inMissQueue(Addr addr, bool is_secure) const override {
         return (mshrQueue.findMatch(addr, is_secure) != 0);
     }
 
@@ -430,13 +430,13 @@ class Cache : public BaseCache
     /** Non-default destructor is needed to deallocate memory. */
     virtual ~Cache();
 
-    void regStats();
+    void regStats() override;
 
     /** serialize the state of the caches
      * We currently don't support checkpointing cache state, so this panics.
      */
-    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 /**
@@ -455,7 +455,7 @@ class CacheBlkVisitorWrapper : public CacheBlkVisitor
     CacheBlkVisitorWrapper(Cache &_cache, VisitorPtr _visitor)
         : cache(_cache), visitor(_visitor) {}
 
-    bool operator()(CacheBlk &blk) M5_ATTR_OVERRIDE {
+    bool operator()(CacheBlk &blk) override {
         return (cache.*visitor)(blk);
     }
 
@@ -477,7 +477,7 @@ class CacheBlkIsDirtyVisitor : public CacheBlkVisitor
     CacheBlkIsDirtyVisitor()
         : _isDirty(false) {}
 
-    bool operator()(CacheBlk &blk) M5_ATTR_OVERRIDE {
+    bool operator()(CacheBlk &blk) override {
         if (blk.isDirty()) {
             _isDirty = true;
             return false;

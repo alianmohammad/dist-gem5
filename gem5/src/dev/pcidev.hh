@@ -76,9 +76,9 @@ class PciDevice : public DmaDevice
       protected:
         PciDevice *device;
 
-        virtual Tick recvAtomic(PacketPtr pkt);
+        Tick recvAtomic(PacketPtr pkt) override;
 
-        virtual AddrRangeList getAddrRanges() const;
+        AddrRangeList getAddrRanges() const override;
 
         Platform *platform;
 
@@ -234,7 +234,7 @@ class PciDevice : public DmaDevice
      *
      * @return a list of non-overlapping address ranges
      */
-    AddrRangeList getAddrRanges() const;
+    AddrRangeList getAddrRanges() const override;
 
     /**
      * Constructor for PCI Dev. This function copies data from the
@@ -243,24 +243,24 @@ class PciDevice : public DmaDevice
      */
     PciDevice(const Params *params);
 
-    virtual void init();
+    void init() override;
 
     /**
      * Serialize this object to the given output stream.
      * @param os The stream to serialize to.
      */
-    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
+    void serialize(CheckpointOut &cp) const override;
 
     /**
      * Reconstruct the state of this object from a checkpoint.
      * @param cp The checkpoint use.
      * @param section The section name of this object
      */
-    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+    void unserialize(CheckpointIn &cp) override;
 
 
-    virtual BaseSlavePort &getSlavePort(const std::string &if_name,
-                                        PortID idx = InvalidPortID)
+    BaseSlavePort &getSlavePort(const std::string &if_name,
+                                PortID idx = InvalidPortID) override
     {
         if (if_name == "config") {
             return configPort;

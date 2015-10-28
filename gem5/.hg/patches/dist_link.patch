@@ -75,35 +75,13 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/Ethernet.py
  
  class EtherBus(EtherObject):
      type = 'EtherBus'
-@@ -79,6 +82,20 @@
-     dump = Param.EtherDump(NULL, "dump object")
-     speed = Param.NetworkBandwidth('100Mbps', "bus speed in bits per second")
- 
-+class EtherSwitch(EtherObject):
-+    type = 'EtherSwitch'
-+    cxx_header = "dev/etherswitch.hh"
-+    dump = Param.EtherDump(NULL, "dump object")
-+    fabric_speed = Param.NetworkBandwidth('1Gbps', "fabric links speed in bits "
-+                                          "per second")
-+    interface = VectorMasterPort("Ethernet Interface")
-+    input_buffer_size = Param.MemorySize('1MB', "size of input port buffers")
-+    output_buffer_size = Param.MemorySize('1MB', "size of output port buffers")
-+    delay = Param.Latency('0us', "packet transmit delay")
-+    delay_var = Param.Latency('0ns', "packet transmit delay variability")
-+    port_count = Param.Int(4, "number of ports")
-+    clock_period = Param.Latency('2ns', "switch clock period")
-+
- class EtherTap(EtherObject):
-     type = 'EtherTap'
-     cxx_header = "dev/ethertap.hh"
 diff -r 3648cc90b58e -r 7056641348f3 src/dev/SConscript
 --- a/src/dev/SConscript	Tue Oct 27 17:26:18 2015 +0000
 +++ b/src/dev/SConscript	Tue Oct 27 17:28:19 2015 +0000
-@@ -56,13 +56,13 @@
+@@ -56,13 +56,12 @@
  Source('disk_image.cc')
  Source('dma_device.cc')
  Source('etherbus.cc')
-+Source('etherswitch.cc')
  Source('etherdevice.cc')
  Source('etherdump.cc')
  Source('etherint.cc')
@@ -505,8 +483,8 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_etherlink.hh
 +        bool busy() const { return (bool)packet; }
 +        void setLocalInt(LocalIface *i) { assert(!localIface); localIface=i; }
 +
-+        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++        void serialize(CheckpointOut &cp) const override;
++        void unserialize(CheckpointIn &cp) override;
 +    };
 +
 +    /**
@@ -632,13 +610,13 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_etherlink.hh
 +    }
 +
 +    virtual EtherInt *getEthPort(const std::string &if_name,
-+                                 int idx) M5_ATTR_OVERRIDE;
++                                 int idx) override;
 +
-+    virtual void init() M5_ATTR_OVERRIDE;
-+    virtual void startup() M5_ATTR_OVERRIDE;
++    virtual void init() override;
++    virtual void startup() override;
 +
-+    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
 +};
 +
 +#endif // __DEV_MULTIETHERLINK_HH__
@@ -1592,8 +1570,8 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +
 +        void drainComplete();
 +
-+        virtual void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE = 0;
-+        virtual void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE = 0;
++        virtual void serialize(CheckpointOut &cp) const override = 0;
++        virtual void unserialize(CheckpointIn &cp) override = 0;
 +    };
 +
 +    class SyncNode: public Sync
@@ -1612,17 +1590,17 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +
 +        SyncNode();
 +        ~SyncNode() {}
-+        void run(bool same_tick) M5_ATTR_OVERRIDE;
++        void run(bool same_tick) override;
 +        void progress(Tick max_req_tick,
 +                      Tick next_repeat,
 +                      ReqType do_ckpt,
-+                      ReqType do_exit) M5_ATTR_OVERRIDE;
++                      ReqType do_exit) override;
 +
-+        void requestCkpt(ReqType req) M5_ATTR_OVERRIDE;
-+        void requestExit(ReqType req) M5_ATTR_OVERRIDE;
++        void requestCkpt(ReqType req) override;
++        void requestExit(ReqType req) override;
 +
-+        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++        void serialize(CheckpointOut &cp) const override;
++        void unserialize(CheckpointIn &cp) override;
 +    };
 +
 +    class SyncSwitch: public Sync
@@ -1645,21 +1623,21 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +        SyncSwitch(int num_nodes);
 +        ~SyncSwitch() {}
 +
-+        void run(bool same_tick) M5_ATTR_OVERRIDE;
++        void run(bool same_tick) override;
 +        void progress(Tick max_req_tick,
 +                      Tick next_repeat,
 +                      ReqType do_ckpt,
-+                      ReqType do_exit) M5_ATTR_OVERRIDE;
++                      ReqType do_exit) override;
 +
-+        void requestCkpt(ReqType) M5_ATTR_OVERRIDE {
++        void requestCkpt(ReqType) override {
 +            panic("Switch requested checkpoint");
 +        }
-+        void requestExit(ReqType) M5_ATTR_OVERRIDE {
++        void requestExit(ReqType) override {
 +            panic("Switch requested exit");
 +        }
 +
-+        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++        void serialize(CheckpointOut &cp) const override;
++        void unserialize(CheckpointIn &cp) override;
 +    };
 +
 +    /**
@@ -1692,7 +1670,7 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +         * This is a global event so process() will be called by each
 +         * simulation threads. (See further comments in the .cc file.)
 +         */
-+        void process() M5_ATTR_OVERRIDE;
++        void process() override;
 +    };
 +    /**
 +     * Class to encapsulate information about data packets received.
@@ -1720,8 +1698,8 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +            Desc(const Desc &d) :
 +                packet(d.packet), sendTick(d.sendTick), sendDelay(d.sendDelay) {}
 +
-+            void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+            void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++            void serialize(CheckpointOut &cp) const override;
++            void unserialize(CheckpointIn &cp) override;
 +        };
 +        /**
 +         * The queue to store the receive descriptors.
@@ -1806,8 +1784,8 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +                        Tick send_tick,
 +                        Tick send_delay);
 +
-+        void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+        void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++        void serialize(CheckpointOut &cp) const override;
++        void unserialize(CheckpointIn &cp) override;
 +        /**
 +         * Adjust receive ticks for pending packets when resuming from a
 +         * checkpoint
@@ -1942,13 +1920,13 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/dist_iface.hh
 +     */
 +    void spawnRecvThread(Event *recv_done, Tick link_delay);
 +
-+    DrainState drain() M5_ATTR_OVERRIDE;
-+    void drainResume() M5_ATTR_OVERRIDE;
++    DrainState drain() override;
++    void drainResume() override;
 +    void init();
 +    void startup();
 +
-+    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
 +    /**
 +     * Initiate the exit from the simulation.
 +     * @param delay Delay param from the m5 exit command. If Delay is zero
@@ -2724,14 +2702,14 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_etherlink.hh
 -    }
 -
 -    virtual EtherInt *getEthPort(const std::string &if_name,
--                                 int idx) M5_ATTR_OVERRIDE;
+-                                 int idx) override;
 -
--    void memWriteback() M5_ATTR_OVERRIDE;
--    void init() M5_ATTR_OVERRIDE;
--    void startup() M5_ATTR_OVERRIDE;
+-    void memWriteback() override;
+-    void init() override;
+-    void startup() override;
 -
--    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
--    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
+-    void serialize(CheckpointOut &cp) const override;
+-    void unserialize(CheckpointIn &cp) override;
 -};
 -
 -#endif // __DEV_MULTIETHERLINK_HH__
@@ -3642,7 +3620,7 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_iface.hh
 -         * This is a global event so process() will be called by each
 -         * simulation threads. (See further comments in the .cc file.)
 -         */
--        void process() M5_ATTR_OVERRIDE;
+-        void process() override;
 -        /**
 -         * Schedule periodic sync when resuming from a checkpoint.
 -         */
@@ -3838,7 +3816,7 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/multi_iface.hh
 -     */
 -    void initRandom();
 -
--    DrainState drain() M5_ATTR_OVERRIDE;
+-    DrainState drain() override;
 -
 -    /**
 -     * Callback when draining is complete.
@@ -4409,7 +4387,7 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/tcp_iface.hh
  
      /**
       * Receive the next incoming message through a TCP stream socket.
-@@ -92,25 +100,24 @@
+@@ -92,24 +100,24 @@
       * @param length Exact size of the expected message in bytes.
       */
      bool recvTCP(int sock, void *buf, unsigned length);
@@ -4426,25 +4404,24 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/tcp_iface.hh
  
 -    virtual void
 -    sendRaw(void *buf, unsigned length,
--            const MultiHeaderPkt::AddressType dest_addr=nullptr)
--        M5_ATTR_OVERRIDE
+-            const MultiHeaderPkt::AddressType dest_addr=nullptr) override
 -    {
 -        sendTCP(sock, buf, length);
 -    }
 +    void sendPacket(const Header &header,
-+                    const EthPacketPtr &packet) M5_ATTR_OVERRIDE;
++                    const EthPacketPtr &packet) override;
  
--    virtual bool recvRaw(void *buf, unsigned length) M5_ATTR_OVERRIDE
+-    virtual bool recvRaw(void *buf, unsigned length) override
 -    {
 -        return recvTCP(sock, buf, length);
 -    }
-+    void sendCmd(const Header &header) M5_ATTR_OVERRIDE;
++    void sendCmd(const Header &header) override;
  
 -    virtual void syncRaw(MultiHeaderPkt::MsgType sync_req,
--                         Tick sync_tick) M5_ATTR_OVERRIDE;
-+    bool recvHeader(Header &header) M5_ATTR_OVERRIDE;
+-                         Tick sync_tick) override;
++    bool recvHeader(Header &header) override;
 +
-+    void recvPacket(const Header &header, EthPacketPtr &packet) M5_ATTR_OVERRIDE;
++    void recvPacket(const Header &header, EthPacketPtr &packet) override;
  
    public:
      /**
@@ -4466,7 +4443,7 @@ diff -r 3648cc90b58e -r 7056641348f3 src/dev/tcp_iface.hh
 +             Tick sync_start, Tick sync_repeat, EventManager *em,
 +             bool is_switch, int num_nodes);
  
-     ~TCPIface() M5_ATTR_OVERRIDE;
+     ~TCPIface() override;
  };
 diff -r 3648cc90b58e -r 7056641348f3 src/sim/global_event.hh
 --- a/src/sim/global_event.hh	Tue Oct 27 17:26:18 2015 +0000

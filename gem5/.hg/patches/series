@@ -1,14 +1,3 @@
-#distributed.patch
-#0_EtherSwitch.patch
-#1_SyncEnabled.patch
-#ckpt-packet-order.patch
-#2_RunScriptEdit.patch
-#3_Polish.sh
-
-# all patches merged
-#dist_all.patch
-
-# patches split across files/components to be submitted to gem5 reviewboard
-dist_switch.patch
 dist_link.patch
 dist_config.patch
+dist_switch.patch

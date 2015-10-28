@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent d660f0d38e3baa1bcaf5a570c270ffa8d98e1d45
+# Parent b33fa76b09f6ca2ee2c24e48f0dd40482c2d4a0a
 
 diff --git a/configs/example/sw.py b/configs/example/sw.py
 new file mode 100644
@@ -90,6 +90,41 @@ new file mode 100644
 +root = Root(full_system = True, system = system)
 +Simulation.run(options, root, None, None)
 +
+diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
+--- a/src/dev/Ethernet.py
++++ b/src/dev/Ethernet.py
+@@ -82,6 +82,20 @@
+     dump = Param.EtherDump(NULL, "dump object")
+     speed = Param.NetworkBandwidth('100Mbps', "bus speed in bits per second")
+ 
++class EtherSwitch(EtherObject):
++    type = 'EtherSwitch'
++    cxx_header = "dev/etherswitch.hh"
++    dump = Param.EtherDump(NULL, "dump object")
++    fabric_speed = Param.NetworkBandwidth('1Gbps', "fabric links speed in bits "
++                                          "per second")
++    interface = VectorMasterPort("Ethernet Interface")
++    input_buffer_size = Param.MemorySize('1MB', "size of input port buffers")
++    output_buffer_size = Param.MemorySize('1MB', "size of output port buffers")
++    delay = Param.Latency('0us', "packet transmit delay")
++    delay_var = Param.Latency('0ns', "packet transmit delay variability")
++    port_count = Param.Int(4, "number of ports")
++    clock_period = Param.Latency('2ns', "switch clock period")
++
+ class EtherTap(EtherObject):
+     type = 'EtherTap'
+     cxx_header = "dev/ethertap.hh"
+diff --git a/src/dev/SConscript b/src/dev/SConscript
+--- a/src/dev/SConscript
++++ b/src/dev/SConscript
+@@ -56,6 +56,7 @@
+ Source('disk_image.cc')
+ Source('dma_device.cc')
+ Source('etherbus.cc')
++Source('etherswitch.cc')
+ Source('etherdevice.cc')
+ Source('etherdump.cc')
+ Source('etherint.cc')
 diff --git a/src/dev/etherswitch.cc b/src/dev/etherswitch.cc
 new file mode 100644
 --- /dev/null
@@ -708,8 +743,8 @@ new file mode 100644
 +    EventWrapper<EtherSwitch, &EtherSwitch::tick> tickEvent;
 +    // all interfaces of the switch
 +    std::vector<Interface*> interfaces;
-+    void serialize(CheckpointOut &cp) const M5_ATTR_OVERRIDE;
-+    void unserialize(CheckpointIn &cp) M5_ATTR_OVERRIDE;
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
 +};
 +
 +#endif // __DEV_ETHERSWITCH_HH__

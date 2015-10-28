@@ -93,8 +93,8 @@ class BaseSimpleCPU : public BaseCPU
   public:
     BaseSimpleCPU(BaseSimpleCPUParams *params);
     virtual ~BaseSimpleCPU();
-    void wakeup(ThreadID tid) M5_ATTR_OVERRIDE;
-    virtual void init();
+    void wakeup(ThreadID tid) override;
+    void init() override;
   public:
     Trace::InstRecord *traceData;
     CheckerCPU *checker;
@@ -134,13 +134,13 @@ class BaseSimpleCPU : public BaseCPU
     void postExecute();
     void advancePC(const Fault &fault);
 
-    virtual void haltContext(ThreadID thread_num);
+    void haltContext(ThreadID thread_num) override;
 
     // statistics
-    virtual void regStats();
-    virtual void resetStats();
+    void regStats() override;
+    void resetStats() override;
 
-    virtual void startup();
+    void startup() override;
 
     virtual Fault readMem(Addr addr, uint8_t* data, unsigned size,
                           unsigned flags) = 0;
@@ -149,12 +149,11 @@ class BaseSimpleCPU : public BaseCPU
                            unsigned flags, uint64_t* res) = 0;
 
     void countInst();
-    virtual Counter totalInsts() const;
-    virtual Counter totalOps() const;
+    Counter totalInsts() const override;
+    Counter totalOps() const override;
 
-    void serializeThread(CheckpointOut &cp,
-                         ThreadID tid) const M5_ATTR_OVERRIDE;
-    void unserializeThread(CheckpointIn &cp, ThreadID tid) M5_ATTR_OVERRIDE;
+    void serializeThread(CheckpointOut &cp, ThreadID tid) const override;
+    void unserializeThread(CheckpointIn &cp, ThreadID tid) override;
 
 };
 
