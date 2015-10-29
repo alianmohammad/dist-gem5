@@ -1,8 +1,12 @@
 # HG changeset patch
-# Parent 7056641348f3ae78db9569b6540800478bd254f7
-diff -r 7056641348f3 -r 54981a437ee0 configs/common/FSConfig.py
---- a/configs/common/FSConfig.py	Tue Oct 27 17:28:19 2015 +0000
-+++ b/configs/common/FSConfig.py	Tue Oct 27 17:30:48 2015 +0000
+# Parent 08faba7bb671de35b829cfbd4abb2c9a7f70628e
+dist: Config file and parameter changes for distributed gem5 simulations
+
+Distributed gem5 is the result of the convergence effort between multi-gem5 and pd-gem5 (from Univ. of Wisconsin). It relies on the base multi-gem5 infrastructure for packet forwarding, synchronisation and checkpointing but combines those with the elaborated network switch model from pd-gem5. Univ. of Wisconsin will push the switch model directly to the public gem5 repo.
+
+diff --git a/configs/common/FSConfig.py b/configs/common/FSConfig.py
+--- a/configs/common/FSConfig.py
++++ b/configs/common/FSConfig.py
 @@ -645,3 +645,39 @@
          self.etherlink.dump = Parent.etherdump
  
@@ -10,26 +14,26 @@ diff -r 7056641348f3 -r 54981a437ee0 configs/common/FSConfig.py
 +
 +
 +def makeDistRoot(testSystem,
-+                  rank,
-+                  size,
-+                  server_name,
-+                  server_port,
-+                  sync_repeat,
-+                  sync_start,
-+                  linkspeed,
-+                  linkdelay,
-+                  dumpfile):
++                 rank,
++                 size,
++                 server_name,
++                 server_port,
++                 sync_repeat,
++                 sync_start,
++                 linkspeed,
++                 linkdelay,
++                 dumpfile):
 +    self = Root(full_system = True)
 +    self.testsys = testSystem
 +
 +    self.etherlink = DistEtherLink(speed = linkspeed,
-+                                    delay = linkdelay,
-+                                    dist_rank = rank,
-+                                    dist_size = size,
-+                                    server_name = server_name,
-+                                    server_port = server_port,
-+                                    sync_start = sync_start,
-+                                    sync_repeat = sync_repeat)
++                                   delay = linkdelay,
++                                   dist_rank = rank,
++                                   dist_size = size,
++                                   server_name = server_name,
++                                   server_port = server_port,
++                                   sync_start = sync_start,
++                                   sync_repeat = sync_repeat)
 +
 +    if hasattr(testSystem, 'realview'):
 +        self.etherlink.int0 = Parent.testsys.realview.ethernet.interface
@@ -43,16 +47,18 @@ diff -r 7056641348f3 -r 54981a437ee0 configs/common/FSConfig.py
 +        self.etherlink.dump = Parent.etherdump
 +
 +    return self
-diff -r 7056641348f3 -r 54981a437ee0 configs/common/Options.py
---- a/configs/common/Options.py	Tue Oct 27 17:28:19 2015 +0000
-+++ b/configs/common/Options.py	Tue Oct 27 17:30:48 2015 +0000
-@@ -275,10 +275,39 @@
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -283,10 +283,41 @@
      # Benchmark options
      parser.add_option("--dual", action="store_true",
                        help="Simulate two systems attached with an ethernet link")
 +    parser.add_option("--dist", action="store_true",
 +                      help="Parallel distributed gem5 simulation.")
-+    parser.add_option("--is-switch", action="store_true")
++    parser.add_option("--is-switch", action="store_true",
++                      help="Select the network switch simulator within a dist"\
++                      "gem5 run")
 +    parser.add_option("--dist-rank", default=0, action="store", type="int",
 +                      help="Rank of this system within the dist gem5 run.")
 +    parser.add_option("--dist-size", default=0, action="store", type="int",
@@ -86,32 +92,33 @@ diff -r 7056641348f3 -r 54981a437ee0 configs/common/Options.py
  
      # Metafile options
      parser.add_option("--etherdump", action="store", type="string", dest="etherdump",
-diff -r 7056641348f3 -r 54981a437ee0 configs/example/fs.py
---- a/configs/example/fs.py	Tue Oct 27 17:28:19 2015 +0000
-+++ b/configs/example/fs.py	Tue Oct 27 17:30:48 2015 +0000
-@@ -328,6 +328,18 @@
+diff --git a/configs/example/fs.py b/configs/example/fs.py
+--- a/configs/example/fs.py
++++ b/configs/example/fs.py
+@@ -360,6 +360,18 @@
  if len(bm) == 2:
      drive_sys = build_drive_system(np)
      root = makeDualRoot(True, test_sys, drive_sys, options.etherdump)
 +elif len(bm) == 1 and options.dist:
 +    # This system is part of a dist-gem5 simulation
 +    root = makeDistRoot(test_sys,
-+                         options.dist_rank,
-+                         options.dist_size,
-+                         options.dist_server_name,
-+                         options.dist_server_port,
-+                         options.dist_sync_repeat,
-+                         options.dist_sync_start,
-+                         options.ethernet_linkspeed,
-+                         options.ethernet_linkdelay,
-+                         options.etherdump);
++                        options.dist_rank,
++                        options.dist_size,
++                        options.dist_server_name,
++                        options.dist_server_port,
++                        options.dist_sync_repeat,
++                        options.dist_sync_start,
++                        options.ethernet_linkspeed,
++                        options.ethernet_linkdelay,
++                        options.etherdump);
  elif len(bm) == 1:
      root = Root(full_system=True, system=test_sys)
  else:
-diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
---- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/util/dist/gem5-dist.sh	Tue Oct 27 17:30:48 2015 +0000
-@@ -0,0 +1,362 @@
+diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
+new file mode 100644
+--- /dev/null
++++ b/util/dist/gem5-dist.sh
+@@ -0,0 +1,358 @@
 +#! /bin/bash
 +
 +#
@@ -268,7 +275,7 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
 +[ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
 +[ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
 +# make sure that RUN_DIR exists
-+mkdir -p $RUN_DIR > /dev/null 2>&1 
++mkdir -p $RUN_DIR > /dev/null 2>&1
 +
 +declare -a SSH_PIDS
 +declare -a HOSTS
@@ -296,10 +303,6 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
 +    fi
 +done
 +((NNODES==NH)) || { echo "(E) Number of cluster slots ($NH) and gem5 instances ($N) differ"; exit -1; }
-+#echo "hosts: ${HOSTS[@]}"
-+#echo "hosts: ${NCORES[@]}"
-+#echo ${#HOSTS[@]}
-+
 +
 +# function to clean up and abort if something goes wrong
 +abort_func ()
@@ -395,7 +398,7 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
 +rm $RUN_DIR/log.switch > /dev/null 2>&1
 +
 +# make sure that CKPT_DIR exists
-+mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1 
++mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1
 +# launch switch gem5
 +echo "launch switch gem5 process ..."
 +$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
@@ -413,7 +416,7 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
 +LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
 +
 +IFS=' ' read -ra ADDR <<< "$LINE"
-+# acutal port that switch is listening on may be different 
++# actual port that switch is listening on may be different
 +# from what we specified if the port was busy
 +SWITCH_PORT=${ADDR[5]}
 +
@@ -474,10 +477,11 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/gem5-dist.sh
 +else
 +    echo "ABORT $(date)"
 +fi
-diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/bootscript.rcS
---- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/util/dist/test/bootscript.rcS	Tue Oct 27 17:30:48 2015 +0000
-@@ -0,0 +1,153 @@
+diff --git a/util/dist/test/bootscript.rcS b/util/dist/test/bootscript.rcS
+new file mode 100644
+--- /dev/null
++++ b/util/dist/test/bootscript.rcS
+@@ -0,0 +1,150 @@
 +#!/bin/bash
 +
 +
@@ -557,7 +561,6 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/bootscript.rcS
 +        echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
 +        echo "Else part - Loading new script..."
 +        /sbin/m5 readfile > /tmp/runscript1.sh
-+        chmod 755 /tmp/runscript1.sh
 +
 +        # Execute the new runscript
 +        if [ -s /tmp/runscript1.sh ]
@@ -565,9 +568,9 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/bootscript.rcS
 +            #/system/bin/sh /data/runscript1.sh
 +            echo "Else part - executing newly loaded script ...!"
 +            /bin/bash /tmp/runscript1.sh
-+        else 
++        else
 +            echo "Else part - Script not specified."
-+            echo "Else part - Exiting..." 
++            echo "Else part - Exiting..."
 +            /sbin/m5 exit
 +        fi
 +    fi
@@ -614,12 +617,10 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/bootscript.rcS
 +    # Read the script for the checkpoint restored execution
 +    echo "Loading new script..."
 +    /sbin/m5 readfile > /tmp/runscript1.sh
-+    chmod 755 /tmp/runscript1.sh
 +
 +    # Execute the new runscript
 +    if [ -s /tmp/runscript1.sh ]
 +    then
-+        #/system/bin/sh /data/runscript1.sh
 +        echo "executing newly loaded script ..."
 +        /bin/bash /tmp/runscript1.sh
 +
@@ -631,9 +632,10 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/bootscript.rcS
 +
 +echo "Fell through script. Exiting..."
 +/sbin/m5 exit
-diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/simple_bootscript.rcS
---- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/util/dist/test/simple_bootscript.rcS	Tue Oct 27 17:30:48 2015 +0000
+diff --git a/util/dist/test/simple_bootscript.rcS b/util/dist/test/simple_bootscript.rcS
+new file mode 100644
+--- /dev/null
++++ b/util/dist/test/simple_bootscript.rcS
 @@ -0,0 +1,107 @@
 +#!/bin/bash
 +
@@ -742,10 +744,11 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/simple_bootscript.rcS
 +	sleep 5
 +    done
 +fi
-diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/test-2nodes-AArch64.sh
---- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/util/dist/test/test-2nodes-AArch64.sh	Tue Oct 27 17:30:48 2015 +0000
-@@ -0,0 +1,79 @@
+diff --git a/util/dist/test/test-2nodes-AArch64.sh b/util/dist/test/test-2nodes-AArch64.sh
+new file mode 100644
+--- /dev/null
++++ b/util/dist/test/test-2nodes-AArch64.sh
+@@ -0,0 +1,78 @@
 +#! /bin/bash
 +
 +#
@@ -805,7 +808,6 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/test-2nodes-AArch64.sh
 +DTB=$M5_PATH/binaries/vexpress.aarch64.20140821.dtb
 +
 +SYS_CONFIG=$GEM5_DIR/configs/example/fs.py
-+#SYS_CONFIG=$HOME/GEM5/BRANDNEW/gem5-obj/configs/hpc/RealViewHPC.py
 +GEM5_EXE=$GEM5_DIR/build/ARM/gem5.opt
 +
 +BOOT_SCRIPT=$GEM5_DIR/util/dist/test/bootscript.rcS
@@ -825,9 +827,10 @@ diff -r 7056641348f3 -r 54981a437ee0 util/dist/test/test-2nodes-AArch64.sh
 +    --dtb-filename=$DTB                                        \
 +    --script=$BOOT_SCRIPT                                      \
 +    $CHKPT_RESTORE
-diff -r 7056641348f3 -r 54981a437ee0 util/multi/bootscript.rcS
---- a/util/multi/bootscript.rcS	Tue Oct 27 17:28:19 2015 +0000
-+++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+diff --git a/util/multi/bootscript.rcS b/util/multi/bootscript.rcS
+deleted file mode 100644
+--- a/util/multi/bootscript.rcS
++++ /dev/null
 @@ -1,122 +0,0 @@
 -#!/bin/bash
 -
@@ -951,9 +954,10 @@ diff -r 7056641348f3 -r 54981a437ee0 util/multi/bootscript.rcS
 -        sleep 5
 -    done
 -fi
-diff -r 7056641348f3 -r 54981a437ee0 util/multi/gem5-multi.sh
---- a/util/multi/gem5-multi.sh	Tue Oct 27 17:28:19 2015 +0000
-+++ /dev/null	Thu Jan 01 00:00:00 1970 +0000
+diff --git a/util/multi/gem5-multi.sh b/util/multi/gem5-multi.sh
+deleted file mode 100755
+--- a/util/multi/gem5-multi.sh
++++ /dev/null
 @@ -1,275 +0,0 @@
 -#! /bin/bash
 -
