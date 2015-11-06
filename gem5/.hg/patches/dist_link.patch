@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent c9fa44792d138e1cd771feb5318365fa2be60de5
+# Parent c091b1e683bd986d7cdd2b0ac814180a403bd362
 dist: Distributed Ethernet link support for distributed gem5 simulations
 
 Distributed gem5 is the result of the convergence effort between multi-gem5 and pd-gem5 (from Univ. of Wisconsin). It relies on the base multi-gem5 infrastructure for packet forwarding, synchronisation and checkpointing but combines those with the elaborated network switch model from pd-gem5. Univ. of Wisconsin will push the switch model directly to the public gem5 repo.
@@ -705,8 +705,8 @@ new file mode 100644
 +    if (needCkpt != ReqType::none)
 +        needCkpt = ReqType::pending;
 +    header.needExit = needExit;
-+    if (needCkpt != ReqType::none)
-+        needCkpt = ReqType::pending;
++    if (needExit != ReqType::none)
++        needExit = ReqType::pending;
 +    DistIface::master->sendCmd(header);
 +    // now wait until all receiver threads complete the synchronisation
 +    auto lf = [this]{ return waitNum == 0; };
@@ -3985,27 +3985,24 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
  
  // MSG_NOSIGNAL does not exists on OS X
  #if defined(__APPLE__) || defined(__MACH__)
-@@ -65,41 +69,114 @@
+@@ -65,41 +69,122 @@
  using namespace std;
  
  vector<int> TCPIface::sockRegistry;
 +int TCPIface::fdStatic = -1;
 +bool TCPIface::anyListening = false;
  
--TCPIface::TCPIface(string server_name, unsigned server_port,
+ TCPIface::TCPIface(string server_name, unsigned server_port,
 -                   unsigned multi_rank, Tick sync_start, Tick sync_repeat,
 -                   EventManager *em) :
 -    MultiIface(multi_rank, sync_start, sync_repeat, em)
-+TCPIface::TCPIface(string server_ip, unsigned server_port,
 +                   unsigned dist_rank, unsigned dist_size,
 +                   Tick sync_start, Tick sync_repeat,
 +                   EventManager *em, bool is_switch, int num_nodes) :
 +    DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
-+               is_switch, num_nodes),
-+    port(server_port), ip(server_ip), isSwitch(is_switch), listening(false)
- {
--    struct addrinfo addr_hint, *addr_results;
-+    establishConnection();
++               is_switch, num_nodes), isSwitch(is_switch), listening(false)
++{
++    establishConnection(server_name, server_port);
 +}
 +
 +bool
@@ -4014,52 +4011,37 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +        panic("Socket already listening!");
 +
 +    struct sockaddr_in sockaddr;
-     int ret;
- 
--    string port_str = to_string(server_port);
++    int ret;
++
 +    fdStatic = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 +    panic_if(fdStatic < 0, "socket() failed: %s", strerror(errno));
- 
--    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
--    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
++
 +    sockaddr.sin_family = PF_INET;
 +    sockaddr.sin_addr.s_addr = INADDR_ANY;
 +    sockaddr.sin_port = htons(port);
 +    // finally clear sin_zero
 +    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
 +    ret = bind(fdStatic, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
- 
--    bzero(&addr_hint, sizeof(addr_hint));
--    addr_hint.ai_family = AF_INET;
--    addr_hint.ai_socktype = SOCK_STREAM;
--    addr_hint.ai_protocol = IPPROTO_TCP;
++
 +    if (ret != 0) {
 +        if (ret == -1 && errno != EADDRINUSE)
 +            panic("ListenSocket(listen): bind() failed!");
 +        return false;
 +    }
- 
--    ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
--                      &addr_hint, &addr_results);
--    panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
++
 +    if (::listen(fdStatic, 24) == -1) {
 +        if (errno != EADDRINUSE)
 +            panic("ListenSocket(listen): listen() failed!");
- 
--    DPRINTF(MultiEthernet, "Connecting to %s:%u\n",
--            server_name.c_str(), port_str.c_str());
++
 +        return false;
 +    }
- 
--    ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
--                    addr_results->ai_addrlen);
--    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
++
 +    listening = true;
 +    anyListening = true;
 +    return true;
 +}
 +void
-+TCPIface::establishConnection()
++TCPIface::establishConnection(string server_name, int port)
 +{
 +    if (isSwitch) {
 +        if (isMaster) {
@@ -4072,11 +4054,10 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +        }
 +        accept();
 +    } else {
-+        connect(ip, port);
++        connect(server_name, port);
++        inform("socket connected");
 +    }
- 
--    freeaddrinfo(addr_results);
--    // add our socket to the static registry
++
 +}
 +void
 +TCPIface::accept()
@@ -4090,41 +4071,68 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +                         sizeof(i)) < 0)
 +            warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
 +    }
-     sockRegistry.push_back(sock);
--    // let the server know who we are
--    sendTCP(sock, &multi_rank, sizeof(multi_rank));
++    sockRegistry.push_back(sock);
 +}
 +
 +void
-+TCPIface::connect(std::string server_name, int port)
-+{
++TCPIface::connect(std::string server_name, int server_port)
+ {
+     struct addrinfo addr_hint, *addr_results;
+-    int ret;
++     int ret;
+ 
+-    string port_str = to_string(server_port);
++     string port_str = to_string(server_port);
+ 
+-    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+-    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
++     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
++     panic_if(sock < 0, "socket() failed: %s", strerror(errno));
+ 
+-    bzero(&addr_hint, sizeof(addr_hint));
+-    addr_hint.ai_family = AF_INET;
+-    addr_hint.ai_socktype = SOCK_STREAM;
+-    addr_hint.ai_protocol = IPPROTO_TCP;
++     int fl = 1;
++     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&fl, sizeof(fl)) < 0)
++         warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
+ 
+-    ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
+-                      &addr_hint, &addr_results);
+-    panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
++     bzero(&addr_hint, sizeof(addr_hint));
++     addr_hint.ai_family = AF_INET;
++     addr_hint.ai_socktype = SOCK_STREAM;
++     addr_hint.ai_protocol = IPPROTO_TCP;
+ 
+-    DPRINTF(MultiEthernet, "Connecting to %s:%u\n",
+-            server_name.c_str(), port_str.c_str());
++     ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
++                       &addr_hint, &addr_results);
++     panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
+ 
+-    ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
+-                    addr_results->ai_addrlen);
+-    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
++     DPRINTF(DistEthernet, "Connecting to %s:%s\n",
++             server_name.c_str(), port_str.c_str());
+ 
+-    freeaddrinfo(addr_results);
+-    // add our socket to the static registry
+-    sockRegistry.push_back(sock);
+-    // let the server know who we are
+-    sendTCP(sock, &multi_rank, sizeof(multi_rank));
++     ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
++                     addr_results->ai_addrlen);
++     panic_if(ret < 0, "connect() failed: %s", strerror(errno));
 +
-+    sock = socket(PF_INET, SOCK_STREAM, 0);
-+    if (sock < 0)
-+        panic("Can't create socket:%s !", strerror(errno));
++     freeaddrinfo(addr_results);
 +
-+     int i = 1;
-+     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&i,
-+                         sizeof(i)) < 0)
-+            warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
-+
-+    struct sockaddr_in sockaddr;
-+    sockaddr.sin_family = PF_INET;
-+    if (inet_pton(PF_INET, server_name.c_str(), &sockaddr.sin_addr) <= 0) {
-+        panic("\n inet_pton error occured\n");
-+    }
-+    sockaddr.sin_port = htons(port);
-+    // finally clear sin_zero
-+    memset(&sockaddr.sin_zero, 0, sizeof(sockaddr.sin_zero));
-+    int ret = ::connect(sock, (struct sockaddr *)&sockaddr, sizeof (sockaddr));
-+    if (ret != 0) {
-+        panic("ConnectSocket(connect): connect() failed!");
-+    }
-+    sockRegistry.push_back(sock);
++     sockRegistry.push_back(sock);
  }
  
  TCPIface::~TCPIface()
-@@ -111,12 +188,20 @@
+@@ -111,12 +196,20 @@
  }
  
  void
@@ -4147,7 +4155,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
      panic_if(ret != length, "send() failed");
  }
  
-@@ -140,19 +225,40 @@
+@@ -140,19 +233,40 @@
  }
  
  void
@@ -4242,12 +4250,10 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  {
    private:
      /**
-@@ -67,6 +67,14 @@
+@@ -67,6 +67,12 @@
       */
      int sock;
  
-+    int port;
-+    std::string ip;
 +    bool isSwitch;
 +
 +    bool listening;
@@ -4257,7 +4263,7 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
      /**
       * Registry for all sockets to the server opened by this gem5 process.
       */
-@@ -82,7 +90,7 @@
+@@ -82,7 +88,7 @@
       * @param length Size of the message in bytes.
       */
      void
@@ -4266,7 +4272,7 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  
      /**
       * Receive the next incoming message through a TCP stream socket.
-@@ -92,24 +100,24 @@
+@@ -92,24 +98,24 @@
       * @param length Exact size of the expected message in bytes.
       */
      bool recvTCP(int sock, void *buf, unsigned length);
@@ -4277,7 +4283,7 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
 +    int getfdStatic() const { return fdStatic; }
 +    bool islistening() const { return listening; }
 +    bool anyislistening() const { return anyListening; }
-+    void establishConnection();
++    void establishConnection(std::string server_name, int port);
  
    protected:
  
@@ -4304,7 +4310,7 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  
    public:
      /**
-@@ -118,14 +126,15 @@
+@@ -118,14 +124,15 @@
       * server process.
       * @param server_port The port number the server listening for new
       * connections.

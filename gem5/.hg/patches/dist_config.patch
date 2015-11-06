@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 08faba7bb671de35b829cfbd4abb2c9a7f70628e
+# Parent 37299df99fd6524ba82230f91e1cf8af115b9ebe
 dist: Config file and parameter changes for distributed gem5 simulations
 
 Distributed gem5 is the result of the convergence effort between multi-gem5 and pd-gem5 (from Univ. of Wisconsin). It relies on the base multi-gem5 infrastructure for packet forwarding, synchronisation and checkpointing but combines those with the elaborated network switch model from pd-gem5. Univ. of Wisconsin will push the switch model directly to the public gem5 repo.
@@ -115,10 +115,10 @@ diff --git a/configs/example/fs.py b/configs/example/fs.py
      root = Root(full_system=True, system=test_sys)
  else:
 diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
-new file mode 100644
+new file mode 100755
 --- /dev/null
 +++ b/util/dist/gem5-dist.sh
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,394 @@
 +#! /bin/bash
 +
 +#
@@ -193,49 +193,38 @@ new file mode 100644
 +# print help
 +usage_func ()
 +{
-+    echo "Usage:$0 [-debug] [-d debug-flags] [-n nnodes] [-f fullsystem] [-s switch] [-p port] [-r rundir] [-c ckptdir] gem5_exe gem5_args"
++    echo "Usage:$0 [-debug] [-n nnodes] [-r rundir] [-c ckptdir] [-p port] [-sw switch]  [--sw-args sw_args] [-fs fullsystem]  [--fs-args fs_args] [--conf-args conf_args] [--m5-args m5_args] -x gem5_exe "
 +    echo "     -debug    : debug mode (start gem5 in gdb)"
-+    echo "     debugflags: debug flags for trace based debugging"
 +    echo "     nnodes    : number of gem5 processes"
-+    echo "     fullsystem: fullsystem config file"
-+    echo "     switch    : switch config file"
-+    echo "     port      : switch listen port"
 +    echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
 +    echo "     ckptdir   : dump/restore checkpoints to/from this path. If not specified, current dir will be used"
++
++    echo "     fullsystem: fullsystem config file"
++    echo "     fs_args   : fullsystem config specific argument list: arg1 arg2 ..."
++    echo "     port      : switch listen port"
++    echo "     switch    : switch config file"
++    echo "     sw_args   : switch config specific argument list: arg1 arg2 ..."
++    echo "     conf_args : common (for both fullsystem and switch) config argument list: arg1 arg2 ..."
 +    echo "     gem5_exe  : gem5 executable (full path required)"
-+    echo "     gem5_args : usual gem5 arguments ( m5 options, config script options)"
++    echo "     m5_args   : common m5 options (e.g. debug flags)"
 +    echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
 +}
 +
-+
 +# Process (optional) command line options
-+
-+while true
++FS_ARGS=" "
++SW_ARGS=" "
++CF_ARGS=" "
++M5_ARGS=" "
++while (($# > 0))
 +do
 +    case "x$1" in
-+        x-n|x-nodes)
-+            NNODES=$2
-+            shift 2
-+            ;;
-+        x-d|x-debug-flags)
-+            GEM5_DEBUG_FLAGS=$2
-+            shift 2
-+            ;;
-+        x-f|x-fullsystem)
-+            FS_CONFIG=$2
-+            shift 2
-+            ;;
-+        x-s|x-switch)
-+            SWITCH_CONFIG=$2
-+            shift 2
-+            ;;
-+        x-p|x-port)
-+            SWITCH_PORT=$2
-+            shift 2
-+            ;;
 +        x-debug)
 +            GEM5_DEBUG="-debug"
 +            shift 1
++            ;;
++        x-n|x-nodes)
++            NNODES=$2
++            shift 2
 +            ;;
 +        x-r|x-rundir)
 +            RUN_DIR=$2
@@ -245,34 +234,80 @@ new file mode 100644
 +            CKPT_DIR=$2
 +            shift 2
 +            ;;
++        x-p|x-port)
++            SW_PORT=$2
++            shift 2
++            ;;
++        x-s|x-switch)
++            SW_CONFIG=$2
++            shift 2
++            ;;
++	x--sw-args)
++	    CUR_ARGS="SW_ARGS"
++	    shift 1
++	    ;;
++        x-f|x-fullsystem)
++            FS_CONFIG=$2
++            shift 2
++            ;;
++	x--fs-args)
++	    CUR_ARGS="FS_ARGS"
++	    shift 1
++	    ;;
++	x--cf-args)
++	    CUR_ARGS="CF_ARGS"
++	    shift 1
++	    ;;
++	x--m5-args)
++	    CUR_ARGS="M5_ARGS"
++	    shift 1
++	    ;;
++	x-x)
++	    GEM5_EXE=$2
++	    shift 2
++	    ;;
++	x-*)
++	    [ -n "$CUR_ARGS" ] || { echo "Unexpected arg: $1"; usage_func; exit -1; }
++	    case "x$2" in
++		x-*|x)
++		    eval $CUR_ARGS=\"${!CUR_ARGS} $1\"
++		    shift 1
++		    ;;
++		*)
++		    eval $CUR_ARGS=\"${!CUR_ARGS} $1 $2\"
++		    shift 2
++		    ;;
++	    esac
++	    ;;
 +        *)
-+            break
++            echo "Unknown arg: $1"
++	    usage_func
++	    exit 1
 +            ;;
 +    esac
 +done
 +
-+# The remaining command line args must be the usual gem5 command
-+(($# < 2)) && { usage_func; exit -1; }
-+GEM5_EXE=$1
-+shift
-+GEM5_ARGS="$*"
++#echo "GEM5_EXE: $GEM5_EXE"
++#echo "SW_ARGS: $SW_ARGS"
++#echo "FS_ARGS: $FS_ARGS"
++#echo "CF_ARGS: $CF_ARGS"
++#echo "M5_ARGS: $M5_ARGS"
 +
 +# Default values to use (in case they are not defined as command line options)
 +DEFAULT_FS_CONFIG=$M5_PATH/configs/example/fs.py
-+DEFAULT_SWITCH_CONFIG=$M5_PATH/configs/example/sw.py
-+DEFAULT_SWITCH_PORT=2200
++DEFAULT_SW_CONFIG=$M5_PATH/configs/example/sw.py
++DEFAULT_SW_PORT=2200
 +
-+[ -z "$FS_CONFIG" ]  && FS_CONFIG=$DEFAULT_FS_CONFIG
-+[ -z "$SWITCH_CONFIG" ]  && SWITCH_CONFIG=$DEFAULT_SWITCH_CONFIG
-+[ -z "$SWITCH_PORT" ] && SWITCH_PORT=$DEFAULT_SWITCH_PORT
-+[ -z "$NNODES" ]      && NNODES=2
-+[ -z "$RUN_DIR" ]      && RUN_DIR=$(pwd)
-+[ -z "$CKPT_DIR" ]      && CKPT_DIR=$(pwd)
-+! [ -z "$GEM5_DEBUG_FLAGS" ] && GEM5_DEBUG_FLAGS="--debug-flags=$GEM5_DEBUG_FLAGS"
++[ -z "$FS_CONFIG" ] && FS_CONFIG=$DEFAULT_FS_CONFIG
++[ -z "$SW_CONFIG" ] && SW_CONFIG=$DEFAULT_SW_CONFIG
++[ -z "$SW_PORT" ] && SW_PORT=$DEFAULT_SW_PORT
++[ -z "$NNODES" ] && NNODES=2
++[ -z "$RUN_DIR" ] && RUN_DIR=$(pwd)
++[ -z "$CKPT_DIR" ] && CKPT_DIR=$(pwd)
 +
 +#  Check if all the executables we need exist
-+[ -f "$FS_CONFIG" ] || { echo "Switch config ${FS_CONFIG} not found"; exit 1; }
-+[ -f "$SWITCH_CONFIG" ] || { echo "Switch config ${SWITCH_CONFIG} not found"; exit 1; }
++[ -f "$FS_CONFIG" ] || { echo "FS config ${FS_CONFIG} not found"; exit 1; }
++[ -f "$SW_CONFIG" ] || { echo "Switch config ${SW_CONFIG} not found"; exit 1; }
 +[ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
 +# make sure that RUN_DIR exists
 +mkdir -p $RUN_DIR > /dev/null 2>&1
@@ -311,7 +346,7 @@ new file mode 100644
 +    echo "KILLED $(date)"
 +    # Try to Kill the server first. That should trigger an exit for all connected
 +    # gem5 processes.
-+    [ "x$SWITCH_PID" != "x" ] && kill $SWITCH_PID 2>/dev/null
++    [ "x$SW_PID" != "x" ] && kill $SW_PID 2>/dev/null
 +    sleep 20
 +    # (try to) kill gem5 processes - just in case something went wrong with the
 +    # server triggered exit
@@ -327,7 +362,6 @@ new file mode 100644
 +    exit -1
 +}
 +
-+
 +# We need a watchdog to trigger full clean up if a gem5 process dies
 +watchdog_func ()
 +{
@@ -339,7 +373,7 @@ new file mode 100644
 +        do
 +            kill -0 $p 2>/dev/null || ((NDEAD+=1))
 +        done
-+        kill -0 $SWITCH_PID || ((NDEAD+=1))
++        kill -0 $SW_PID || ((NDEAD+=1))
 +        if ((NDEAD>0))
 +        then
 +            # we may be in the middle of an orderly termination,
@@ -402,23 +436,24 @@ new file mode 100644
 +# launch switch gem5
 +echo "launch switch gem5 process ..."
 +$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
-+             $GEM5_DEBUG_FLAGS                                                \
-+             $SWITCH_CONFIG                                                   \
-+             $GEM5_ARGS                                                       \
-+             --checkpoint-dir=$CKPT_DIR/m5out.switch                          \
-+             --is-switch                                                      \
-+             --dist-size=$NNODES                                              \
-+             --dist-server-port=$SWITCH_PORT &> $RUN_DIR/log.switch &
-+SWITCH_PID=$!
++          $M5_ARGS                                                            \
++          $SW_CONFIG                                                      \
++          $SW_ARGS                                                            \
++          $CF_ARGS                                                            \
++          --checkpoint-dir=$CKPT_DIR/m5out.switch                             \
++          --is-switch                                                         \
++          --dist-size=$NNODES                                                 \
++          --dist-server-port=$SW_PORT &> $RUN_DIR/log.switch &
++SW_PID=$!
 +
 +# block here till switch process starts
-+connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SWITCH_PID
++connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SW_PID
 +LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
 +
 +IFS=' ' read -ra ADDR <<< "$LINE"
 +# actual port that switch is listening on may be different
 +# from what we specified if the port was busy
-+SWITCH_PORT=${ADDR[5]}
++SW_PORT=${ADDR[5]}
 +
 +# Now launch all the gem5 processes with ssh.
 +echo "START $(date)"
@@ -433,27 +468,28 @@ new file mode 100644
 +        # make sure that CKPT_DIR exists
 +        mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
 +	    echo "starting gem5 on $h ..."
-+	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n           \
-+        $GEM5_DEBUG_FLAGS                                                     \
-+        $FS_CONFIG                                                            \
-+        $GEM5_ARGS                                                            \
-+        --checkpoint-dir=$CKPT_DIR/m5out.$n                                   \
-+	    --dist                                                                \
-+	    --dist-rank=$n                                                        \
-+	    --dist-size=$NNODES                                                   \
-+        --dist-server-name=${HOSTS[0]}                                        \
-+        --dist-server-port=$SWITCH_PORT
++	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n       \
++                       $M5_ARGS                                               \
++                       $FS_CONFIG                                             \
++                       $FS_ARGS                                               \
++                       $CF_ARGS                                               \
++                       --checkpoint-dir=$CKPT_DIR/m5out.$n                    \
++	               --dist                                                 \
++	               --dist-rank=$n                                         \
++	               --dist-size=$NNODES                                    \
++                       --dist-server-name=${HOSTS[0]}                         \
++                       --dist-server-port=$SW_PORT
 +	    SSH_PIDS[$n]=$!
-+        if [ "x$GEM5_DEBUG" == "x" ]
-+        then
-+            connected $RUN_DIR/log.$n "Listening" $j ${SSH_PIDS[$n]}
-+        fi
-+	    ((n+=1))
++        #if [ "x$GEM5_DEBUG" == "x" ]
++        #then
++        #    connected $RUN_DIR/log.$n "socket connected" $j ${SSH_PIDS[$n]}
++        #fi
++	((n+=1))
 +    done
 +done
 +
 +# Wait here if it is a debug session
-+[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SWITCH_PID; exit -1; }
++[ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SW_PID; exit -1; }
 +
 +# start watchdog to trigger complete abort (after a grace period) if any
 +# gem5 process dies
@@ -466,7 +502,7 @@ new file mode 100644
 +do
 +    wait $p || ((NFAIL+=1))
 +done
-+wait $SWITCH_PID || ((NFAIL+=1))
++wait $SW_PID || ((NFAIL+=1))
 +
 +# all done, let's terminate the watchdog
 +kill $WATCHDOG_PID 2>/dev/null
