@@ -1,0 +1,24 @@
+#!/bin/bash
+
+source /root/.bashrc
+echo "bootscript.rcS is running"
+
+
+# Retrieve dist-gem5 rank and size parameters using magic keys
+MY_RANK=$(/sbin/m5 initparam 1234)
+
+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+
+MY_SIZE=$(/sbin/m5 initparam 1235)
+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+
+if [ $MY_RANK == "0" ]
+    then
+    ping -c 1 192.168.0.3
+    ping -c 1 192.168.0.4
+    ping -c 1 192.168.0.5
+else
+    /bin/bash
+fi
+
+/sbin/m5 exit 1

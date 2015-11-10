@@ -1,0 +1,151 @@
+#!/bin/bash
+
+
+#
+# Copyright (c) 2015 ARM Limited
+# All rights reserved
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
+# Copyright (c) 2015 University of Illinois Urbana Champaign
+# All rights reserved
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met: redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer;
+# redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in the
+# documentation and/or other materials provided with the distribution;
+# neither the name of the copyright holders nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# Authors: Gabor Dozsa
+#          Mohammad Alian
+#
+#
+# This is an example boot script to use for dist-gem5 runs. The important
+# task here is to extract the rank and size information through the m5
+# initparam utility and use those to configure MAC/IP addresses and hostname.
+#
+# You are expected to customize this scipt for your needs (e.g. change
+# the command at the end of the scipt to run your tests/workloads.
+
+source /root/.bashrc
+echo "bootscript.rcS is running"
+
+# Retrieve dist-gem5 rank and size parameters using magic keys
+MY_RANK=$(/sbin/m5 initparam 1234)
+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+MY_SIZE=$(/sbin/m5 initparam 1235)
+[ $? = 0 ] || { echo "m5 initparam failed"; exit -1; }
+
+
+echo "***** Start boot script! *****"
+if [ "${RUNSCRIPT_VAR+set}" != set ]
+then
+    # Signal our future self that it's safe to continue
+    echo "RUNSCRIPT_VAR not set! Setting it ..."
+    export RUNSCRIPT_VAR=1
+else
+    if [ "$MY_RANK" == "0" ]
+    then
+        # We've already executed once, so we should exit
+        echo "calling m5 exit!"
+        /sbin/m5 exit 1
+    else
+        echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
+        echo "Else part - Loading new script..."
+        /sbin/m5 readfile > /tmp/runscript1.sh
+
+        # Execute the new runscript
+        if [ -s /tmp/runscript1.sh ]
+        then
+            #/system/bin/sh /data/runscript1.sh
+            echo "Else part - executing newly loaded script ...!"
+            /bin/bash /tmp/runscript1.sh
+        else
+            echo "Else part - Script not specified."
+            echo "Else part - Exiting..."
+            /sbin/m5 exit 1
+        fi
+    fi
+fi
+
+/bin/hostname node${MY_RANK}
+
+# Keep MAC address assignment simple for now ...
+(($MY_RANK > 97)) && { echo "(E) Rank must be less than 98"; /sbin/m5 abort; }
+((MY_ADDR = MY_RANK + 2))
+if (($MY_ADDR < 10))
+then
+    MY_ADDR_PADDED=0${MY_ADDR}
+else
+    MY_ADDR_PADDED=${MY_ADDR}
+fi
+
+/sbin/ifconfig eth0 hw ether 00:90:00:00:00:${MY_ADDR_PADDED}
+/sbin/ifconfig eth0 192.168.0.${MY_ADDR} netmask 255.255.255.0 up
+
+/sbin/ifconfig -a
+
+echo "Hello from $MY_RANK of $MY_SIZE"
+
+
+if [ "$MY_RANK" == "0" ]
+then
+    # Trigger an immediate checkpoint at the next sync (by passing a non-zero
+    # delay param to m5 ckpt)
+    sleep 0.1
+    /sbin/m5 checkpoint 1
+else
+    # do nothing, just iterate through the script
+    echo "do nothing, just iterate through the script ..."
+fi
+
+#THIS IS WHERE EXECUTION BEGINS FROM AFTER RESTORING FROM CKPT
+if [ "$RUNSCRIPT_VAR" -eq 1 ]
+then
+
+    # Signal our future self not to recurse infinitely
+    export RUNSCRIPT_VAR=2
+    echo "3. RUNSCRIPT_VAR is $RUNSCRIPT_VAR"
+
+    # Read the script for the checkpoint restored execution
+    echo "Loading new script..."
+    /sbin/m5 readfile > /tmp/runscript1.sh
+
+    # Execute the new runscript
+    if [ -s /tmp/runscript1.sh ]
+    then
+        echo "executing newly loaded script ..."
+        /bin/bash /tmp/runscript1.sh
+
+    else
+        echo "Script not specified. Dropping into shell..."
+    fi
+
+fi
+
+echo "Fell through script. Exiting..."
+/sbin/m5 exit 1

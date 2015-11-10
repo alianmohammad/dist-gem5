@@ -1,0 +1,16 @@
+gem5 Simulator System.  http://gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 compiled Nov  9 2015 23:38:34
+gem5 started Nov 10 2015 00:03:42
+gem5 executing on tomcat, pid 17339
+command line: /users/alian/simulators/new-dist/dist-gem5/gem5/util/dist/new-test/./../../../build/ARM/gem5.opt -d /users/alian/simulators/new-dist/dist-gem5/gem5/util/dist/new-test/m5out.switch /users/alian/simulators/new-dist/dist-gem5/gem5/configs/example/sw.py --dist-sync-start=1000000000t -r1 --checkpoint-dir=/users/alian/simulators/new-dist/dist-gem5/gem5/util/dist/new-test/m5out.switch --is-switch --dist-size=4 --dist-cm-server-port=5003 --dist-cm-server-name=tomcat --dist-server-port=2200
+
+Global frequency set at 1000000000000 ticks per second
+info: tcp_iface listening on port 2200
+info: Next dist synchronisation tick is changed to 3440070000000.
+**** REAL SIMULATION ****
+info: Dist sync scheduled at 3440070000000 and repeats 10000000
+info: Entering event queue @ 3440070000000.  Starting simulation...
+gem5.opt: build/ARM/dev/dist_iface.cc:144: virtual void DistIface::SyncSwitch::run(bool): Assertion `!same_tick || (nextAt == curTick())' failed.
+Program aborted at tick 3440080000000

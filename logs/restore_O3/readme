@@ -1,0 +1,5 @@
+1)
+$./take-ckpt-4nodes-AArch32.sh
+
+2)
+$./run-4nodes-AArch32.sh
