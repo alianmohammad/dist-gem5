@@ -1,0 +1,879 @@
+# HG changeset patch
+# Parent 16af3a301607dc8c437e12db47d73ae35ea2c513
+
+diff --git a/configs/common/FSConfig.py b/configs/common/FSConfig.py
+--- a/configs/common/FSConfig.py
++++ b/configs/common/FSConfig.py
+@@ -647,27 +647,18 @@
+     return self
+ 
+ 
+-def makeDistRoot(testSystem,
+-                 rank,
+-                 size,
+-                 server_name,
+-                 server_port,
+-                 sync_repeat,
+-                 sync_start,
+-                 linkspeed,
+-                 linkdelay,
+-                 dumpfile):
++def makeDistRoot(testSystem, options):
+     self = Root(full_system = True)
+     self.testsys = testSystem
+ 
+-    self.etherlink = DistEtherLink(speed = linkspeed,
+-                                   delay = linkdelay,
+-                                   dist_rank = rank,
+-                                   dist_size = size,
+-                                   server_name = server_name,
+-                                   server_port = server_port,
+-                                   sync_start = sync_start,
+-                                   sync_repeat = sync_repeat)
++    self.etherlink = DistEtherLink(speed = options.ethernet_linkspeed,
++                                   delay = options.ethernet_linkdelay,
++                                   dist_rank = options.dist_rank,
++                                   dist_size = options.dist_size,
++                                   server_name = options.dist_server_name,
++                                   server_port = options.dist_server_port,
++                                   sync_start = options.dist_sync_start,
++                                   sync_repeat = options.dist_sync_repeat)
+ 
+     if hasattr(testSystem, 'realview'):
+         self.etherlink.int0 = Parent.testsys.realview.ethernet.interface
+@@ -676,7 +667,7 @@
+     else:
+         fatal("Don't know how to connect DistEtherLink to this system")
+ 
+-    if dumpfile:
++    if options.etherdump:
+         self.etherdump = EtherDump(file=dumpfile)
+         self.etherlink.dump = Parent.etherdump
+ 
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -292,6 +292,14 @@
+                       default=2200,
+                       action="store", type="int",
+                       help="Message server listen port\nDEFAULT: 2200")
++    parser.add_option("--dist-cm-server-name",
++                      default="127.0.0.1",
++                      action="store", type="string",
++                      help="Name of the cluster manager server host\nDEFAULT: localhost")
++    parser.add_option("--dist-cm-server-port",
++                      default=5000,
++                      action="store", type="int",
++                      help="Cluster manager server listen port\nDEFAULT: 5000")
+     parser.add_option("--dist-sync-repeat",
+                       default="0us",
+                       action="store", type="string",
+diff --git a/configs/example/fs.py b/configs/example/fs.py
+--- a/configs/example/fs.py
++++ b/configs/example/fs.py
+@@ -330,16 +330,7 @@
+     root = makeDualRoot(True, test_sys, drive_sys, options.etherdump)
+ elif len(bm) == 1 and options.dist:
+     # This system is part of a dist-gem5 simulation
+-    root = makeDistRoot(test_sys,
+-                        options.dist_rank,
+-                        options.dist_size,
+-                        options.dist_server_name,
+-                        options.dist_server_port,
+-                        options.dist_sync_repeat,
+-                        options.dist_sync_start,
+-                        options.ethernet_linkspeed,
+-                        options.ethernet_linkdelay,
+-                        options.etherdump);
++    root = makeDistRoot(test_sys, options)
+ elif len(bm) == 1:
+     root = Root(full_system=True, system=test_sys)
+ else:
+diff --git a/configs/example/sw.py b/configs/example/sw.py
+--- a/configs/example/sw.py
++++ b/configs/example/sw.py
+@@ -65,7 +65,9 @@
+                                       sync_start = options.dist_sync_start,
+                                       sync_repeat = options.dist_sync_repeat,
+                                       is_switch = True,
+-                                      num_nodes = options.dist_size)
++                                      num_nodes = options.dist_size,
++                                      cluster_manager_host_name = options.dist_cm_server_name,
++                                      cluster_manager_port = options.dist_cm_server_port)
+                        for i in xrange(options.dist_size)]
+ 
+     for (i, link) in enumerate(switch.portlink):
+diff --git a/src/dev/Ethernet.py b/src/dev/Ethernet.py
+--- a/src/dev/Ethernet.py
++++ b/src/dev/Ethernet.py
+@@ -74,6 +74,8 @@
+     server_port = Param.UInt32('2200', "Message server port")
+     is_switch = Param.Bool(False, "true if this a link in etherswitch")
+     num_nodes = Param.UInt32('2', "Number of simulate nodes")
++    cluster_manager_host_name = Param.String('127.0.0.1', "Cluster Manager host name")
++    cluster_manager_port = Param.UInt32('5000', "Cluster Manager port number")
+ 
+ class EtherBus(EtherObject):
+     type = 'EtherBus'
+diff --git a/src/dev/dist_etherlink.cc b/src/dev/dist_etherlink.cc
+--- a/src/dev/dist_etherlink.cc
++++ b/src/dev/dist_etherlink.cc
+@@ -95,7 +95,8 @@
+     distIface = new TCPIface(p->server_name, p->server_port,
+                              p->dist_rank, p->dist_size,
+                              p->sync_start, sync_repeat, this, p->is_switch,
+-                             p->num_nodes);
++                             p->num_nodes, p->cluster_manager_host_name,
++                             p->cluster_manager_port);
+ 
+     localIface = new LocalIface(name() + ".int0", txLink, rxLink, distIface);
+ }
+diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
+--- a/src/dev/dist_iface.hh
++++ b/src/dev/dist_iface.hh
+@@ -82,6 +82,7 @@
+ #include <queue>
+ #include <thread>
+ #include <utility>
++#include <string>
+ 
+ #include "dev/dist_packet.hh"
+ #include "dev/etherpkt.hh"
+@@ -489,6 +490,10 @@
+      */
+     void recvThreadFunc(Event *recv_done, Tick link_delay);
+ 
++    virtual void connectCMServer(std::string ip, int port) = 0;
++
++    virtual void sendCMInfo() = 0;
++
+   public:
+ 
+     /**
+diff --git a/src/dev/dist_packet.hh b/src/dev/dist_packet.hh
+--- a/src/dev/dist_packet.hh
++++ b/src/dev/dist_packet.hh
+@@ -103,4 +103,9 @@
+     };
+ };
+ 
++typedef struct {
++    int connCount;
++    int port;
++} CMInfo;
++
+ #endif
+diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
+--- a/src/dev/tcp_iface.cc
++++ b/src/dev/tcp_iface.cc
+@@ -69,16 +69,23 @@
+ using namespace std;
+ 
+ vector<int> TCPIface::sockRegistry;
++int TCPIface::port = 2200;
++int TCPIface::connectionCount = 0;
++int TCPIface::clusterManagerSockfd = -1;
+ int TCPIface::fdStatic = -1;
+ bool TCPIface::anyListening = false;
+ 
+ TCPIface::TCPIface(string server_name, unsigned server_port,
+                    unsigned dist_rank, unsigned dist_size,
+                    Tick sync_start, Tick sync_repeat,
+-                   EventManager *em, bool is_switch, int num_nodes) :
++                   EventManager *em, bool is_switch, int num_nodes,
++                   string cm_host_name, int cm_port) :
+     DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
+                is_switch, num_nodes), isSwitch(is_switch), listening(false)
+ {
++    if (isSwitch && isMaster)
++        connectCMServer(cm_host_name, cm_port);
++
+     establishConnection(server_name, server_port);
+ }
+ 
+@@ -118,20 +125,25 @@
+     return true;
+ }
+ void
+-TCPIface::establishConnection(string server_name, int port)
++TCPIface::establishConnection(string server_name, int port__)
+ {
+     if (isSwitch) {
+         if (isMaster) {
++            port = port__;
+             while (!listen(port)) {
+                 DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n"
+                         , port);
+                 port++;
+             }
+             inform("tcp_iface listening on port %d", port);
++            sendCMInfo();
++            connectionCount ++;
+         }
+         accept();
++        sendCMInfo();
++        connectionCount ++;
+     } else {
+-        connect(server_name, port);
++        connect(server_name, port__);
+         inform("socket connected");
+     }
+ 
+@@ -155,36 +167,36 @@
+ TCPIface::connect(std::string server_name, int server_port)
+ {
+     struct addrinfo addr_hint, *addr_results;
+-     int ret;
++    int ret;
+ 
+-     string port_str = to_string(server_port);
++    string port_str = to_string(server_port);
+ 
+-     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+-     panic_if(sock < 0, "socket() failed: %s", strerror(errno));
++    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
++    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
+ 
+-     int fl = 1;
+-     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&fl, sizeof(fl)) < 0)
+-         warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
++    int fl = 1;
++    if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&fl, sizeof(fl)) < 0)
++        warn("ConnectSocket(connect): setsockopt() TCP_NODELAY failed!");
+ 
+-     bzero(&addr_hint, sizeof(addr_hint));
+-     addr_hint.ai_family = AF_INET;
+-     addr_hint.ai_socktype = SOCK_STREAM;
+-     addr_hint.ai_protocol = IPPROTO_TCP;
++    bzero(&addr_hint, sizeof(addr_hint));
++    addr_hint.ai_family = AF_INET;
++    addr_hint.ai_socktype = SOCK_STREAM;
++    addr_hint.ai_protocol = IPPROTO_TCP;
+ 
+-     ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
+-                       &addr_hint, &addr_results);
+-     panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
++    ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
++                      &addr_hint, &addr_results);
++    panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
+ 
+-     DPRINTF(DistEthernet, "Connecting to %s:%s\n",
+-             server_name.c_str(), port_str.c_str());
++    DPRINTF(DistEthernet, "Connecting to %s:%s\n",
++            server_name.c_str(), port_str.c_str());
+ 
+-     ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
+-                     addr_results->ai_addrlen);
+-     panic_if(ret < 0, "connect() failed: %s", strerror(errno));
++    ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
++                    addr_results->ai_addrlen);
++    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
+ 
+-     freeaddrinfo(addr_results);
++    freeaddrinfo(addr_results);
+ 
+-     sockRegistry.push_back(sock);
++    sockRegistry.push_back(sock);
+ }
+ 
+ TCPIface::~TCPIface()
+@@ -269,4 +281,20 @@
+     packet->length = header.dataPacketLength;
+ }
+ 
++void
++TCPIface::connectCMServer(string name, int port)
++{
++    connect(name, port);
++    clusterManagerSockfd = sockRegistry[0];
++    sockRegistry.pop_back();
++}
+ 
++void
++TCPIface::sendCMInfo()
++{
++    CMInfo cm_info;
++    cm_info.port = port;
++    cm_info.connCount = connectionCount;
++    int ret = write(clusterManagerSockfd, &cm_info, sizeof(CMInfo));
++    panic_if(ret < 0, "write to cluster manager server failed");
++}
+diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
+--- a/src/dev/tcp_iface.hh
++++ b/src/dev/tcp_iface.hh
+@@ -70,8 +70,14 @@
+     bool isSwitch;
+ 
+     bool listening;
++    /**
++     * Switch iface port number
++     */
++    static int port;
+     static bool anyListening;
+     static int fdStatic;
++    static int clusterManagerSockfd;
++    static int connectionCount;
+ 
+     /**
+      * Registry for all sockets to the server opened by this gem5 process.
+@@ -117,6 +123,10 @@
+ 
+     void recvPacket(const Header &header, EthPacketPtr &packet) override;
+ 
++    void connectCMServer(std::string name, int port) override;
++
++    void sendCMInfo() override;
++
+   public:
+     /**
+      * The ctor creates and connects the stream socket to the server.
+@@ -132,7 +142,7 @@
+     TCPIface(std::string server_name, unsigned server_port,
+              unsigned dist_rank, unsigned dist_size,
+              Tick sync_start, Tick sync_repeat, EventManager *em,
+-             bool is_switch, int num_nodes);
++             bool is_switch, int num_nodes, std::string cm_ip, int cm_port);
+ 
+     ~TCPIface() override;
+ };
+diff --git a/util/dist/Makefile b/util/dist/Makefile
+new file mode 100644
+--- /dev/null
++++ b/util/dist/Makefile
+@@ -0,0 +1,42 @@
++# Copyright (c) 2015 University of Illinois Urbana Champaign
++# All rights reserved
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are
++# met: redistributions of source code must retain the above copyright
++# notice, this list of conditions and the following disclaimer;
++# redistributions in binary form must reproduce the above copyright
++# notice, this list of conditions and the following disclaimer in the
++# documentation and/or other materials provided with the distribution;
++# neither the name of the copyright holders nor the names of its
++# contributors may be used to endorse or promote products derived from
++# this software without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++#
++# Authors: Mohammad Alian
++#
++# Makefile for cluster manager used for distributed simulations
++
++CC= gcc
++CCFLAGS= -g -O0
++
++default: cluster_manager
++
++cluster_manager: cluster_manager.cc
++	$(CC) $(LFLAGS) -o $@ $^
++
++clean:
++	@rm -f cluster_manager
++
++.PHONY: clean
+diff --git a/util/dist/cluster_manager.cc b/util/dist/cluster_manager.cc
+new file mode 100644
+--- /dev/null
++++ b/util/dist/cluster_manager.cc
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (c) 2015 University of Illinois Urbana Champaign
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met: redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer;
++ * redistributions in binary form must reproduce the above copyright
++ * notice, this list of conditions and the following disclaimer in the
++ * documentation and/or other materials provided with the distribution;
++ * neither the name of the copyright holders nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * Authors: Mohammad Alian
++ *
++ */
++
++/* @file
++ * Cluster manager daemon used in distributed gem5 simulations
++ *
++ * It will create a direct tcp socket connection to switch process and
++ * retreive information from it and write them to a log file that can be
++ * used by gem5-dist.sh script.
++ */
++
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++typedef struct {
++    int connCount;
++    int port;
++} CMInfo;
++
++int print_info(FILE* log_file, CMInfo *info);
++
++int main(int argc, char *argv[])
++{
++    int port, num_nodes;
++    int listenfd = 0, sfd;
++    struct sockaddr_in serv_addr;
++    CMInfo info;
++    FILE *log_file;
++    if (argc < 3) {
++        printf("\n Usage: %s <port#> <#nodes> <log file path>\n", argv[0]);
++        return 1;
++    }
++    port = atoi(argv[1]);
++    num_nodes = atoi(argv[2]);
++    log_file = fopen(argv[3], "w");
++
++    listenfd = socket(AF_INET, SOCK_STREAM, 0);
++    memset(&serv_addr, '0', sizeof(serv_addr));
++
++    serv_addr.sin_family = AF_INET;
++    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
++    do {
++        serv_addr.sin_port = htons(port);
++        port ++;
++    }
++    while(bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0);
++
++    listen(listenfd, 1);
++    fprintf(log_file, "cm info: port: %d\n", port - 1 );
++    fflush(log_file);
++    sfd = accept(listenfd, (struct sockaddr*)NULL, NULL);
++    while(1)
++    {
++        if (read(sfd, &info, sizeof(CMInfo)) <= 0)
++            break;
++        if (print_info(log_file, &info) >= num_nodes)
++            break;
++    }
++    fprintf(log_file, "DONE\n");
++    fclose(log_file);
++    close(sfd);
++    return 0;
++}
++
++int print_info(FILE* log_file, CMInfo *info) {
++    fprintf(log_file, "switch info: port: %d conn_count: %d\n",
++            info->port, info->connCount);
++    fflush(log_file);
++    return info->connCount;
++}
+diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
+--- a/util/dist/gem5-dist.sh
++++ b/util/dist/gem5-dist.sh
+@@ -72,7 +72,7 @@
+ # print help
+ usage_func ()
+ {
+-    echo "Usage:$0 [-debug] [-n nnodes] [-r rundir] [-c ckptdir] [-p port] [-sw switch]  [--sw-args sw_args] [-fs fullsystem]  [--fs-args fs_args] [--conf-args conf_args] [--m5-args m5_args] -x gem5_exe "
++    echo "Usage:$0 [-debug] [-n nnodes] [-r rundir] [-c ckptdir] [-p port] [-sw switch] [--sw-args sw_args] [-fs fullsystem] [--fs-args fs_args] [--cf-args conf_args] [--m5-args m5_args] -x gem5_exe -cmx cm_exe"
+     echo "     -debug    : debug mode (start gem5 in gdb)"
+     echo "     nnodes    : number of gem5 processes"
+     echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
+@@ -83,8 +83,9 @@
+     echo "     port      : switch listen port"
+     echo "     switch    : switch config file"
+     echo "     sw_args   : switch config specific argument list: arg1 arg2 ..."
+-    echo "     conf_args : common (for both fullsystem and switch) config argument list: arg1 arg2 ..."
++    echo "     cf_args   : common (for both fullsystem and switch) config argument list: arg1 arg2 ..."
+     echo "     gem5_exe  : gem5 executable (full path required)"
++    echo "     cm_exe    : cluster manager executable (full path required)"
+     echo "     m5_args   : common m5 options (e.g. debug flags)"
+     echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
+ }
+@@ -121,31 +122,35 @@
+             SW_CONFIG=$2
+             shift 2
+             ;;
+-	x--sw-args)
+-	    CUR_ARGS="SW_ARGS"
+-	    shift 1
+-	    ;;
+-        x-f|x-fullsystem)
++	    x--sw-args)
++	        CUR_ARGS="SW_ARGS"
++	        shift 1
++	        ;;
++        x-fs|x-fullsystem)
+             FS_CONFIG=$2
+             shift 2
+             ;;
+-	x--fs-args)
+-	    CUR_ARGS="FS_ARGS"
+-	    shift 1
+-	    ;;
+-	x--cf-args)
+-	    CUR_ARGS="CF_ARGS"
+-	    shift 1
+-	    ;;
+-	x--m5-args)
+-	    CUR_ARGS="M5_ARGS"
+-	    shift 1
+-	    ;;
+-	x-x)
+-	    GEM5_EXE=$2
+-	    shift 2
+-	    ;;
+-	x-*)
++	    x--fs-args)
++	        CUR_ARGS="FS_ARGS"
++	        shift 1
++	        ;;
++	    x--cf-args)
++	        CUR_ARGS="CF_ARGS"
++	        shift 1
++	        ;;
++	    x--m5-args)
++	        CUR_ARGS="M5_ARGS"
++	        shift 1
++	        ;;
++	    x-x)
++	        GEM5_EXE=$2
++	        shift 2
++	        ;;
++        x-cmx|x-)
++            CM_EXE=$2
++            shift 2
++            ;;
++	    x-*)
+ 	    [ -n "$CUR_ARGS" ] || { echo "Unexpected arg: $1"; usage_func; exit -1; }
+ 	    case "x$2" in
+ 		x-*|x)
+@@ -183,11 +188,13 @@
+ [ -z "$NNODES" ] && NNODES=2
+ [ -z "$RUN_DIR" ] && RUN_DIR=$(pwd)
+ [ -z "$CKPT_DIR" ] && CKPT_DIR=$(pwd)
++[ -z "$CM_EXE" ] && CM_EXE="$M5_PATH/util/dist/cluster_manager"
+ 
+ #  Check if all the executables we need exist
+ [ -f "$FS_CONFIG" ] || { echo "FS config ${FS_CONFIG} not found"; exit 1; }
+ [ -f "$SW_CONFIG" ] || { echo "Switch config ${SW_CONFIG} not found"; exit 1; }
+ [ -x "$GEM5_EXE" ]   || { echo "Executable ${GEM5_EXE} not found"; exit 1; }
++[ -x "$CM_EXE" ]   || { echo "Executable ${CM_EXE} not found"; exit 1; }
+ # make sure that RUN_DIR exists
+ mkdir -p $RUN_DIR > /dev/null 2>&1
+ 
+@@ -202,7 +209,7 @@
+ # host1 nslots1 host2 nslots2 ...
+ # (This is what LSF does by default.)
+ NH=0
+-[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="127.0.0.1 $NNODES"
++[ "x$LSB_MCPU_HOSTS" != "x" ] || LSB_MCPU_HOSTS="127.0.0.1 $((NNODES+1))"
+ host=""
+ for hc in $LSB_MCPU_HOSTS
+ do
+@@ -216,13 +223,13 @@
+         host=""
+     fi
+ done
+-((NNODES==NH)) || { echo "(E) Number of cluster slots ($NH) and gem5 instances ($N) differ"; exit -1; }
++(($((NNODES+1))==NH)) || { echo "(E) Number of cluster slots ($NH) and gem5 instances ($N) differ"; exit -1; }
+ 
+ # function to clean up and abort if something goes wrong
+ abort_func ()
+ {
+-    echo
+     echo "KILLED $(date)"
++    [ "x$CM_PID" != "x" ] && kill $CM_PID 2>/dev/null
+     # Try to Kill the server first. That should trigger an exit for all connected
+     # gem5 processes.
+     [ "x$SW_PID" != "x" ] && kill $SW_PID 2>/dev/null
+@@ -268,39 +275,61 @@
+ # launching gem5 processes under gdb control for debugging
+ start_func ()
+ {
+-      local N=$1
+-      local HOST=$2
+-      local ENV_ARGS=$3
+-      shift 3
+-      if [ "x$GEM5_DEBUG" != "x" ]
+-      then
+-	      echo "DEBUG starting terminal..."
+-	      MY_ARGS="$@"
+-	      xterm -e "gdb --args $MY_ARGS" &
+-      else
+-        ssh $HOST $ENV_ARGS "$@" &> $RUN_DIR/log.$N &
+-      fi
++    local N=$1
++    local HOST=$2
++    local ENV_ARGS=$3
++    shift 3
++    if [ "x$GEM5_DEBUG" != "x" ]
++    then
++	    echo "DEBUG starting terminal..."
++	    MY_ARGS="$@"
++        if [ "x$N" == "xswitch" ]
++        then
++	        xterm -e "gdb --args $MY_ARGS" &
++            echo "please run switch process through the gdb terminal" \
++                 "in 30 seconds ..."
++            sleep 30
++        else
++	        xterm -e "gdb --args $MY_ARGS" &
++        fi
++    elif [ "x$HOST" != "x127.0.0.1" ]
++        then
++            ssh $HOST $ENV_ARGS "$@" &> $RUN_DIR/log.$N &
++    else
++        "$@" &> $RUN_DIR/log.$N &
++    fi
+ }
+ 
+-# block till the gem5 process starts
+-connected ()
++# block till an specific string is written to a log file
++wait_for_connection ()
+ {
+-    FILE=$1
+-    STRING=$2
+-    echo -n "waiting for $3 to start "
++    local FILE=$1
++    local STRING=$2
+     while : ;
+     do
+-        kill -0 $4 || { echo "Failed to start $3"; exit -1; }
++        if [ "x$3" != "x" ]
++        then
++            kill -0 $3 || { echo "Failed to start process"; exit -1; }
++        fi
+         [[ -f "$FILE" ]] &&                                                   \
+         grep -q "$STRING" "$FILE" &&                                          \
+-        echo -e "\nnode #$3 started" &&                                       \
+         break
+ 
+         sleep 2
+-        echo -n "."
+     done
+ }
+ 
++# retreive information from log file
++process_log_file() {
++    local LOG_FILE=$1
++    local STRING=$2
++    local POS=$3
++    local LINE=$(grep -r "$STRING" $LOG_FILE)
++
++    IFS=' ' read -ra ADDR <<< "$LINE"
++    echo ${ADDR[$POS]}
++}
++
+ # Trigger full clean up in case we are being killed by external signal
+ trap 'abort_func' INT TERM
+ 
+@@ -312,61 +341,87 @@
+ 
+ # make sure that CKPT_DIR exists
+ mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1
+-# launch switch gem5
+-echo "launch switch gem5 process ..."
+-$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
+-          $M5_ARGS                                                            \
+-          $SW_CONFIG                                                      \
+-          $SW_ARGS                                                            \
+-          $CF_ARGS                                                            \
+-          --checkpoint-dir=$CKPT_DIR/m5out.switch                             \
+-          --is-switch                                                         \
+-          --dist-size=$NNODES                                                 \
+-          --dist-server-port=$SW_PORT &> $RUN_DIR/log.switch &
+-SW_PID=$!
+ 
+-# block here till switch process starts
+-connected $RUN_DIR/log.switch "tcp_iface listening on port" "switch" $SW_PID
+-LINE=$(grep -r "tcp_iface listening on port" $RUN_DIR/log.switch)
++# find a log file name which does not exist in this directory to be 
++# used for cluster manager log file
++LOG_CM="log0.cm"
++PREFIX=0
++while [ -f $LOG_CM ]; do
++    PREFIX=$((PREFIX+1))
++    LOG_CM="log${PREFIX}.cm"
++done
+ 
+-IFS=' ' read -ra ADDR <<< "$LINE"
+-# actual port that switch is listening on may be different
+-# from what we specified if the port was busy
+-SW_PORT=${ADDR[5]}
++# start cluster manager daemon
++$CM_EXE 5000 $NNODES $LOG_CM &
++CM_PID=$!
++sleep 2
++
++# block till cluster manager write its port information into the log file
++wait_for_connection $LOG_CM "cm info: port:" $CM_PID
++
++# retreive cluster manger info from log file
++CM_PORT=$(process_log_file $LOG_CM "cm info: port:" 3)
+ 
+ # Now launch all the gem5 processes with ssh.
+ echo "START $(date)"
+-n=0
++n=-1
+ for ((i=0; i < ${#HOSTS[@]}; i++))
+ do
+     h=${HOSTS[$i]}
+     for ((j=0; j < ${NCORES[i]}; j++))
+     do
+-        #cleanup log files before starting gem5 processes
+-        rm $RUN_DIR/log.$n > /dev/null 2>&1
+-        # make sure that CKPT_DIR exists
+-        mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
+-	    echo "starting gem5 on $h ..."
+-	    start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n       \
++        if [ "x$n" == "x-1" ]
++        then
++	        echo "starting switch on $h ..."
++            start_func "switch" $h "$ENV_ARGS" $GEM5_EXE                      \
++                        -d $RUN_DIR/m5out.switch                              \
++                        $M5_ARGS                                              \
++                        $SW_CONFIG                                            \
++                        $SW_ARGS                                              \
++                        $CF_ARGS                                              \
++                        --checkpoint-dir=$CKPT_DIR/m5out.switch               \
++                        --is-switch                                           \
++                        --dist-size=$NNODES                                   \
++                        --dist-cm-server-port=$CM_PORT                        \
++                        --dist-cm-server-name=$(hostname)                     \
++                        --dist-server-port=$SW_PORT
++            SW_PID=$!
++            # block till switch process starts and writes the port number which
++            # is listening for incoming tcp_iface connections 
++            wait_for_connection $LOG_CM "switch info: port:" $SW_PID
++
++            # retreive switch process info
++            SW_PORT=$(process_log_file $LOG_CM "switch info: port:" 3)
++            n=0
++        else
++            #cleanup log files before starting gem5 processes
++            rm $RUN_DIR/log.$n > /dev/null 2>&1
++            # make sure that CKPT_DIR exists
++            mkdir -p $CKPT_DIR/m5out.$n > /dev/null 2>&1
++	        echo "starting node#$n on $h ..."
++	        start_func $n $h "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.$n       \
+                        $M5_ARGS                                               \
+                        $FS_CONFIG                                             \
+                        $FS_ARGS                                               \
+                        $CF_ARGS                                               \
+                        --checkpoint-dir=$CKPT_DIR/m5out.$n                    \
+-	               --dist                                                 \
+-	               --dist-rank=$n                                         \
+-	               --dist-size=$NNODES                                    \
++	                   --dist                                                 \
++	                   --dist-rank=$n                                         \
++	                   --dist-size=$NNODES                                    \
+                        --dist-server-name=${HOSTS[0]}                         \
+                        --dist-server-port=$SW_PORT
+-	    SSH_PIDS[$n]=$!
+-        #if [ "x$GEM5_DEBUG" == "x" ]
+-        #then
+-        #    connected $RUN_DIR/log.$n "socket connected" $j ${SSH_PIDS[$n]}
+-        #fi
+-	((n+=1))
++	        SSH_PIDS[$n]=$!
++            sleep 1
++            wait_for_connection $LOG_CM "switch info: port: $SW_PORT conn_count: $((n+1))" ${SSH_PIDS[$n]}
++	        ((n+=1))
++        fi
+     done
+ done
+ 
++rm $LOG_CM
++kill $CM_PID 2>/dev/null
++
++echo "**** DISTRIBUTED SIMULATION ****"
+ # Wait here if it is a debug session
+ [ "x$GEM5_DEBUG" == "x" ] || {  echo "DEBUG session"; wait $SW_PID; exit -1; }
+ 
+diff --git a/util/dist/test/bootscript.rcS b/util/dist/test/bootscript.rcS
+--- a/util/dist/test/bootscript.rcS
++++ b/util/dist/test/bootscript.rcS
+@@ -72,7 +72,7 @@
+     then
+         # We've already executed once, so we should exit
+         echo "calling m5 exit!"
+-        /sbin/m5 exit
++        /sbin/m5 exit 1
+     else
+         echo "Else part - RUNSCRIPT_VAR1_TUX1 is set! So reload and execute!"
+         echo "Else part - Loading new script..."
+@@ -87,7 +87,7 @@
+         else
+             echo "Else part - Script not specified."
+             echo "Else part - Exiting..."
+-            /sbin/m5 exit
++            /sbin/m5 exit 1
+         fi
+     fi
+ fi
+@@ -147,4 +147,4 @@
+ fi
+ 
+ echo "Fell through script. Exiting..."
+-/sbin/m5 exit
++/sbin/m5 exit 1
+diff --git a/util/dist/test/test-2nodes-AArch64.sh b/util/dist/test/test-2nodes-AArch64.sh
+--- a/util/dist/test/test-2nodes-AArch64.sh
++++ b/util/dist/test/test-2nodes-AArch64.sh
+@@ -62,17 +62,21 @@
+ BOOT_SCRIPT=$GEM5_DIR/util/dist/test/bootscript.rcS
+ GEM5_DIST_SH=$GEM5_DIR/util/dist/gem5-dist.sh
+ 
+-DEBUG_FLAGS="-d DistEthernet,DistEthernetPkt"
++DEBUG_FLAGS="--debug-flags=DistEthernet,DistEthernetPkt"
+ #CHKPT_RESTORE="-r1"
+ 
+ NNODES=2
+ 
+-$GEM5_DIST_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE   \
+-    --cpu-type=atomic                                          \
+-    --num-cpus=1                                               \
+-    --machine-type=VExpress_EMM64                              \
+-    --disk-image=$IMG                                          \
+-    --kernel=$VMLINUX                                          \
+-    --dtb-filename=$DTB                                        \
+-    --script=$BOOT_SCRIPT                                      \
++$GEM5_DIST_SH -n $NNODES -fs $SYS_CONFIG -x $GEM5_EXE               \
++    --m5-args                                                       \
++    $DEBUG_FLAGS                                                    \
++    --fs-args                                                       \
++    --cpu-type=atomic                                               \
++    --num-cpus=1                                                    \
++    --machine-type=VExpress_EMM64                                   \
++    --disk-image=$IMG                                               \
++    --kernel=$VMLINUX                                               \
++    --dtb-filename=$DTB                                             \
++    --script=$BOOT_SCRIPT                                           \
++    --cf-args                                                       \
+     $CHKPT_RESTORE
