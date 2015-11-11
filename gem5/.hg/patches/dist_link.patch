@@ -583,7 +583,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_iface.cc
-@@ -0,0 +1,760 @@
+@@ -0,0 +1,771 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -903,6 +903,10 @@ new file mode 100644
 +void
 +DistIface::SyncEvent::process()
 +{
++    // We may not start a global periodic sync while draining due to the
++    // possibility of a global deadlock when taking a checkpoint. We will
++    // need a 'distributed drain' solution to eliminate this restriction.
++    panic_if(_draining, "Distributed sync is hit while draining");
 +    /*
 +     * Note that this is a global event so this process method will be called
 +     * by only exactly one thread.
@@ -967,8 +971,14 @@ new file mode 100644
 +DistIface::RecvScheduler::resumeRecvTicks()
 +{
 +    // Schedule pending packets asap in case link speed/delay changed when
-+    // resuming from the checkpoint.
-+    // This may be done during unserialize except that curTick() is unknown.
++    // restoring from the checkpoint.
++    // This may be done during unserialize except that curTick() is unknown
++    // so we call this during drainResume().
++    // If we are not restoring from a checkppint than link latency could not
++    // change so we just return.
++    if (!ckptRestore)
++        return;
++
 +    std::vector<Desc> v;
 +    while (!descQueue.empty()) {
 +        Desc d = descQueue.front();
@@ -987,6 +997,7 @@ new file mode 100644
 +    } else {
 +        assert(descQueue.empty() && v.empty());
 +    }
++    ckptRestore = false;
 +}
 +
 +void
@@ -1084,6 +1095,7 @@ new file mode 100644
 +{
 +    assert(descQueue.size() == 0);
 +    assert(recvDone->scheduled() == false);
++    assert(ckptRestore == false);
 +
 +    UNSERIALIZE_SCALAR(prevRecvTick);
 +    // unserialize the receive desc queue
@@ -1094,6 +1106,7 @@ new file mode 100644
 +        recv_desc.unserializeSection(cp, csprintf("rxDesc_%d", i));
 +        descQueue.push(recv_desc);
 +    }
++    ckptRestore = true;
 +}
 +
 +DistIface::DistIface(unsigned dist_rank,
@@ -1210,16 +1223,17 @@ new file mode 100644
 +DistIface::drain()
 +{
 +    DPRINTF(DistEthernet,"DistIFace::drain() called\n");
-+
 +    // This can be called multiple times in the same drain cycle.
++    if (this == master)
++        syncEvent->draining(true);
 +    return DrainState::Drained;
 +}
 +
 +void
 +DistIface::drainResume() {
-+    if (master == this) {
-+        syncEvent->start();
-+    }
++    DPRINTF(DistEthernet,"DistIFace::drainResume() called\n");
++    if (this == master)
++        syncEvent->draining(false);
 +    recvScheduler.resumeRecvTicks();
 +}
 +
@@ -1243,7 +1257,7 @@ new file mode 100644
 +    recvScheduler.unserializeSection(cp, "recvScheduler");
 +    if (this == master) {
 +        sync->unserializeSection(cp, "Sync");
-+  }
++    }
 +}
 +
 +void
@@ -1266,11 +1280,8 @@ new file mode 100644
 +DistIface::startup()
 +{
 +    DPRINTF(DistEthernet, "DistIface::startup() started\n");
-+    // If this run is a resume from a checkpoint than we schedule the first
-+    // periodic sync in drainResume()
-+    if (curTick() == 0 && this == master)
++    if (this == master)
 +        syncEvent->start();
-+
 +    DPRINTF(DistEthernet, "DistIface::startup() done\n");
 +}
 +
@@ -1348,7 +1359,7 @@ diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_iface.hh
-@@ -0,0 +1,572 @@
+@@ -0,0 +1,585 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -1614,12 +1625,17 @@ new file mode 100644
 +     */
 +    class SyncEvent : public GlobalSyncEvent
 +    {
++      private:
++        /**
++         * Flag to set when the system is draining
++         */
++        bool _draining;
 +      public:
 +        /**
 +         * Only the firstly instantiated DistIface object will
 +         * call this constructor.
 +         */
-+        SyncEvent() : GlobalSyncEvent(Sim_Exit_Pri, 0) {}
++        SyncEvent() : GlobalSyncEvent(Sim_Exit_Pri, 0), _draining(false) {}
 +
 +        ~SyncEvent() {}
 +        /**
@@ -1632,6 +1648,9 @@ new file mode 100644
 +         * file.)
 +         */
 +        void process() override;
++
++        bool draining() const { return _draining; }
++        void draining(bool fl) { _draining = fl; }
 +    };
 +    /**
 +     * Class to encapsulate information about data packets received.
@@ -1711,6 +1730,11 @@ new file mode 100644
 +                             Tick send_delay,
 +                             Tick prev_recv_tick);
 +
++        /**
++         * Flag to set if receive ticks for pending packets need to be
++         * recalculated due to changed link latencies at a resume
++         */
++        bool ckptRestore;
 +
 +      public:
 +        /**
@@ -1721,7 +1745,7 @@ new file mode 100644
 +         */
 +        RecvScheduler(EventManager *em) :
 +            prevRecvTick(0), recvDone(nullptr), linkDelay(0),
-+            eventManager(em) {}
++            eventManager(em), ckptRestore(false) {}
 +
 +        /**
 +         *  Initialize network link parameters.
@@ -1748,7 +1772,7 @@ new file mode 100644
 +        void serialize(CheckpointOut &cp) const override;
 +        void unserialize(CheckpointIn &cp) override;
 +        /**
-+         * Adjust receive ticks for pending packets when resuming from a
++         * Adjust receive ticks for pending packets when restoring from a
 +         * checkpoint
 +         *
 +         * @note Link speed and delay parameters may change at resume.
