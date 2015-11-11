@@ -1,0 +1,430 @@
+# HG changeset patch
+# Parent e90b3aa5c9813c81fea15cf229bd84eae8f62cf6
+
+diff --git a/src/dev/dist_etherlink.cc b/src/dev/dist_etherlink.cc
+--- a/src/dev/dist_etherlink.cc
++++ b/src/dev/dist_etherlink.cc
+@@ -72,7 +72,7 @@
+ using namespace std;
+ 
+ DistEtherLink::DistEtherLink(const Params *p)
+-    : EtherObject(p)
++    : EtherObject(p), linkDelay(p->delay)
+ {
+     DPRINTF(DistEthernet,"DistEtherLink::DistEtherLink() "
+             "link delay:%llu ticksPerByte:%f\n", p->delay, p->speed);
+@@ -139,7 +139,7 @@
+ DistEtherLink::init()
+ {
+     DPRINTF(DistEthernet,"DistEtherLink::init() called\n");
+-    distIface->init();
++    distIface->init(rxLink->doneEvent(), linkDelay);
+ }
+ 
+ void
+@@ -154,11 +154,6 @@
+ {
+     assert(!distIface);
+     distIface = m;
+-    // Spawn a new receiver thread that will process messages
+-    // coming in from peer gem5 processes.
+-    // The receive thread will also schedule a (receive) doneEvent
+-    // for each incoming data packet.
+-    distIface->spawnRecvThread(&doneEvent, linkDelay);
+ }
+ 
+ void
+diff --git a/src/dev/dist_etherlink.hh b/src/dev/dist_etherlink.hh
+--- a/src/dev/dist_etherlink.hh
++++ b/src/dev/dist_etherlink.hh
+@@ -161,20 +161,24 @@
+         void rxDone();
+         typedef EventWrapper<RxLink, &RxLink::rxDone> DoneEvent;
+         friend void DoneEvent::process();
+-        DoneEvent doneEvent;
++        DoneEvent _doneEvent;
+ 
+       public:
+ 
+         RxLink(const std::string &name, DistEtherLink *p,
+                Tick delay, EtherDump *d) :
+-            Link(name, p, d, &doneEvent),
+-            linkDelay(delay), doneEvent(this) {}
++            Link(name, p, d, &_doneEvent),
++            linkDelay(delay), _doneEvent(this) {}
+         ~RxLink() {}
+ 
+         /**
+          * Register our dist interface to talk to the peer gem5 processes.
+          */
+         void setDistInt(DistIface *m);
++        /**
++         * Done events will be scheduled by DistIface (so we need the accessor)
++         */
++        const DoneEvent *doneEvent() const { return &_doneEvent; }
+     };
+ 
+     /**
+@@ -210,6 +214,8 @@
+     RxLink *rxLink;
+     LocalIface *localIface;
+ 
++    Tick linkDelay;
++
+   public:
+     typedef DistEtherLinkParams Params;
+     DistEtherLink(const Params *p);
+diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
+--- a/src/dev/dist_iface.cc
++++ b/src/dev/dist_iface.cc
+@@ -57,6 +57,7 @@
+ using namespace std;
+ DistIface::Sync *DistIface::sync = nullptr;
+ DistIface::SyncEvent *DistIface::syncEvent = nullptr;
++unsigned DistIface::distIfaceNum = 0;
+ unsigned DistIface::recvThreadsNum = 0;
+ DistIface *DistIface::master = nullptr;
+ 
+@@ -318,7 +319,7 @@
+ DistIface::SyncEvent::process()
+ {
+     // We may not start a global periodic sync while draining due to the
+-    // possibility of a global deadlock when taking a checkpoint. We will
++    // possibility of a global deadlock when taking a checkpoint. We would
+     // need a 'distributed drain' solution to eliminate this restriction.
+     panic_if(_draining, "Distributed sync is hit while draining");
+     /*
+@@ -546,6 +547,8 @@
+         master = this;
+         isMaster = true;
+     }
++    distIfaceId = distIfaceNum;
++    distIfaceNum++;
+ }
+ 
+ DistIface::~DistIface()
+@@ -622,13 +625,13 @@
+ }
+ 
+ void
+-DistIface::spawnRecvThread(Event *recv_done, Tick link_delay)
++DistIface::spawnRecvThread(const Event *recv_done, Tick link_delay)
+ {
+     assert(recvThread == nullptr);
+ 
+     recvThread = new std::thread(&DistIface::recvThreadFunc,
+                                  this,
+-                                 recv_done,
++                                 const_cast<Event *>(recv_done),
+                                  link_delay);
+     recvThreadsNum++;
+ }
+@@ -659,6 +662,11 @@
+     // called exactly once after the system is fully drained.
+     sync->drainComplete();
+ 
++    unsigned rank_orig = rank, dist_iface_id_orig = distIfaceId;
++
++    SERIALIZE_SCALAR(rank_orig);
++    SERIALIZE_SCALAR(dist_iface_id_orig);
++
+     recvScheduler.serializeSection(cp, "recvScheduler");
+     if (this == master) {
+         sync->serializeSection(cp, "Sync");
+@@ -668,6 +676,16 @@
+ void
+ DistIface::unserialize(CheckpointIn &cp)
+ {
++    unsigned rank_orig, dist_iface_id_orig;
++    UNSERIALIZE_SCALAR(rank_orig);
++    UNSERIALIZE_SCALAR(dist_iface_id_orig);
++
++    panic_if(rank != rank_orig, "Rank mismatch at resume (rank=%d, orig=%d)",
++             rank, rank_orig);
++    panic_if(distIfaceId != dist_iface_id_orig, "Dist iface ID mismatch "
++             "at resume (distIfaceId=%d, orig=%d)", distIfaceId,
++             dist_iface_id_orig);
++
+     recvScheduler.unserializeSection(cp, "recvScheduler");
+     if (this == master) {
+         sync->unserializeSection(cp, "Sync");
+@@ -675,8 +693,19 @@
+ }
+ 
+ void
+-DistIface::init()
++DistIface::init(const Event *done_event, Tick link_delay)
+ {
++    // Init hook for the underlaying message transport to setup/finalize
++    // communication channels
++    initTransport();
++
++    // Spawn a new receiver thread that will process messages
++    // coming in from peer gem5 processes.
++    // The receive thread will also schedule a (receive) doneEvent
++    // for each incoming data packet.
++    spawnRecvThread(done_event, link_delay);
++
++
+     // Adjust the periodic sync start and interval. Different DistIface
+     // might have different requirements. The singleton sync object
+     // will select the minimum values for both params.
+diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
+--- a/src/dev/dist_iface.hh
++++ b/src/dev/dist_iface.hh
+@@ -446,15 +446,20 @@
+      * The number of gem5 processes comprising this dist simulation.
+      */
+     unsigned size;
++    /**
++     * Number of DistIface objects (i.e. dist links in this gem5 process)
++     */
++    static unsigned distIfaceNum;
++    /**
++     * Unique id for the dist link
++     */
++    unsigned distIfaceId;
+ 
+     bool isMaster;
+ 
+   private:
+     /**
+-     * Total number of receiver threads (in this gem5 process).
+-     * During the simulation it should be constant and equal to the
+-     * number of DistIface objects (i.e. simulated Ethernet
+-     * links).
++     * Number of receiver threads (in this gem5 process)
+      */
+     static unsigned recvThreadsNum;
+     /**
+@@ -498,6 +503,17 @@
+      */
+     virtual void recvPacket(const Header &header, EthPacketPtr &packet) = 0;
+     /**
++     * Init hook for the underlaying transport
++     */
++    virtual void initTransport() = 0;
++    /**
++     * spawn the receiver thread.
++     * @param recv_done The receive done event associated with the simulated
++     * Ethernet link.
++     * @param link_delay The link delay for the simulated Ethernet link.
++     */
++    void spawnRecvThread(const Event *recv_done, Tick link_delay);
++    /**
+      * The function executed by a receiver thread.
+      */
+     void recvThreadFunc(Event *recv_done, Tick link_delay);
+@@ -535,17 +551,10 @@
+      * receive queue is not empty.
+      */
+     EthPacketPtr packetIn() { return recvScheduler.popPacket(); }
+-    /**
+-     * spawn the receiver thread.
+-     * @param recv_done The receive done event associated with the simulated
+-     * Ethernet link.
+-     * @param link_delay The link delay for the simulated Ethernet link.
+-     */
+-    void spawnRecvThread(Event *recv_done, Tick link_delay);
+ 
+     DrainState drain() override;
+     void drainResume() override;
+-    void init();
++    void init(const Event *e, Tick link_delay);
+     void startup();
+ 
+     void serialize(CheckpointOut &cp) const override;
+diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
+--- a/src/dev/tcp_iface.cc
++++ b/src/dev/tcp_iface.cc
+@@ -77,9 +77,9 @@
+                    Tick sync_start, Tick sync_repeat,
+                    EventManager *em, bool is_switch, int num_nodes) :
+     DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
+-               is_switch, num_nodes), isSwitch(is_switch), listening(false)
++              is_switch, num_nodes), serverName(server_name),
++    serverPort(server_port), isSwitch(is_switch), listening(false)
+ {
+-    establishConnection(server_name, server_port);
+ }
+ 
+ bool
+@@ -117,25 +117,76 @@
+     anyListening = true;
+     return true;
+ }
++
+ void
+-TCPIface::establishConnection(string server_name, int port)
++TCPIface::establishConnection()
+ {
++    static unsigned cur_rank = 0;
++    bool link_okay = false;
++    struct {
++        unsigned rank;
++        unsigned dist_iface_id;
++        unsigned dist_iface_num;
++    } buf;
+     if (isSwitch) {
+         if (isMaster) {
+-            while (!listen(port)) {
+-                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n"
+-                        , port);
+-                port++;
++            while (!listen(serverPort)) {
++                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n",
++                        serverPort);
++                serverPort++;
+             }
+-            inform("tcp_iface listening on port %d", port);
++            inform("tcp_iface listening on port %d", serverPort);
+         }
+-        accept();
+-    } else {
+-        connect(server_name, port);
+-        inform("socket connected");
++        do {
++            accept();
++            DPRINTF(DistEthernet, "New connection, waiting for link info\n");
++            if (!recvTCP(sock, &buf, sizeof(buf)))
++                panic("Failed to receive link info");
++            if (buf.rank == cur_rank) {
++                link_okay = true;
++                inform("Link okay  (iface:%d -> (node:%d, iface:%d))",
++                       distIfaceId, buf.rank, buf.dist_iface_id);
++                if (buf.dist_iface_id == buf.dist_iface_num - 1)
++                    cur_rank++;
++               // send back ack
++                buf.dist_iface_id = distIfaceId;
++                buf.dist_iface_num = distIfaceNum;
++                sendTCP(sock, &buf, sizeof(buf));
++            } else {
++                DPRINTF(DistEthernet, "Connection is out of order (rank:%d)\n",
++                        buf.rank);
++                // send back cancel
++                buf.rank = cur_rank;
++                sendTCP(sock, &buf, sizeof(buf));
++                close(sock);
++            }
++        } while (!link_okay);
++    } else { // this is not a switch
++        do {
++            connect();
++            // send link info
++            buf.rank = rank;
++            buf.dist_iface_id = distIfaceId;
++            buf.dist_iface_num = distIfaceNum;
++            sendTCP(sock, &buf, sizeof(buf));
++            DPRINTF(DistEthernet, "Connected, waiting for ack\n");
++            if (!recvTCP(sock, &buf, sizeof(buf)))
++                panic("Failed to receive ack");
++            if (buf.rank != rank) {
++                DPRINTF(DistEthernet, "Connection is out of order"
++                        " (cur_rank:%d)\n", buf.rank);
++                close(sock);
++                usleep(10000*abs((int)rank - (int)buf.rank));
++            } else {
++                link_okay = true;
++                inform("Link okay  (iface:%d -> switch iface:%d)", distIfaceId,
++                       buf.dist_iface_id);
++            }
++        } while (!link_okay);
+     }
++    sockRegistry.push_back(sock);
++}
+ 
+-}
+ void
+ TCPIface::accept()
+ {
+@@ -148,16 +199,15 @@
+                          sizeof(i)) < 0)
+             warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
+     }
+-    sockRegistry.push_back(sock);
+ }
+ 
+ void
+-TCPIface::connect(std::string server_name, int server_port)
++TCPIface::connect()
+ {
+     struct addrinfo addr_hint, *addr_results;
+      int ret;
+ 
+-     string port_str = to_string(server_port);
++     string port_str = to_string(serverPort);
+ 
+      sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+      panic_if(sock < 0, "socket() failed: %s", strerror(errno));
+@@ -171,20 +221,18 @@
+      addr_hint.ai_socktype = SOCK_STREAM;
+      addr_hint.ai_protocol = IPPROTO_TCP;
+ 
+-     ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
++     ret = getaddrinfo(serverName.c_str(), port_str.c_str(),
+                        &addr_hint, &addr_results);
+      panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
+ 
+      DPRINTF(DistEthernet, "Connecting to %s:%s\n",
+-             server_name.c_str(), port_str.c_str());
++             serverName.c_str(), port_str.c_str());
+ 
+      ret = ::connect(sock, (struct sockaddr *)(addr_results->ai_addr),
+                      addr_results->ai_addrlen);
+      panic_if(ret < 0, "connect() failed: %s", strerror(errno));
+ 
+      freeaddrinfo(addr_results);
+-
+-     sockRegistry.push_back(sock);
+ }
+ 
+ TCPIface::~TCPIface()
+@@ -269,4 +317,11 @@
+     packet->length = header.dataPacketLength;
+ }
+ 
+-
++void
++TCPIface::initTransport()
++{
++    // We cannot setup the conections in the constructor beacuse the number
++    // of dist interfaces (per process) is unknown until the (simobject) init
++    // phase. That information is necessary for global connection ordering.
++    establishConnection();
++}
+diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
+--- a/src/dev/tcp_iface.hh
++++ b/src/dev/tcp_iface.hh
+@@ -67,6 +67,9 @@
+      */
+     int sock;
+ 
++    std::string serverName;
++    int serverPort;
++
+     bool isSwitch;
+ 
+     bool listening;
+@@ -100,11 +103,11 @@
+     bool recvTCP(int sock, void *buf, unsigned length);
+     bool listen(int port);
+     void accept();
+-    void connect(std::string server_name, int port);
++    void connect();
+     int getfdStatic() const { return fdStatic; }
+     bool islistening() const { return listening; }
+     bool anyislistening() const { return anyListening; }
+-    void establishConnection(std::string server_name, int port);
++    void establishConnection();
+ 
+   protected:
+ 
+@@ -117,6 +120,8 @@
+ 
+     void recvPacket(const Header &header, EthPacketPtr &packet) override;
+ 
++    void initTransport() override;
++
+   public:
+     /**
+      * The ctor creates and connects the stream socket to the server.

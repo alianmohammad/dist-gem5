@@ -2,4 +2,4 @@ add-initparam-key.patch
 dist_link.patch
 dist_config.patch
 dist_switch.patch
-cluster_manager.patch
+connect_order.patch
