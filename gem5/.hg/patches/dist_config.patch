@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 37299df99fd6524ba82230f91e1cf8af115b9ebe
+# Parent 6eeeb1d182d71bf80c25233cdadf5cd6ba151cbd
 dist: Config file and parameter changes for distributed gem5 simulations
 
 Distributed gem5 is the result of the convergence effort between multi-gem5 and pd-gem5 (from Univ. of Wisconsin). It relies on the base multi-gem5 infrastructure for packet forwarding, synchronisation and checkpointing but combines those with the elaborated network switch model from pd-gem5. Univ. of Wisconsin will push the switch model directly to the public gem5 repo.
@@ -118,7 +118,7 @@ diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
 new file mode 100755
 --- /dev/null
 +++ b/util/dist/gem5-dist.sh
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,384 @@
 +#! /bin/bash
 +
 +#
@@ -193,7 +193,7 @@ new file mode 100755
 +# print help
 +usage_func ()
 +{
-+    echo "Usage:$0 [-debug] [-n nnodes] [-r rundir] [-c ckptdir] [-p port] [-sw switch]  [--sw-args sw_args] [-fs fullsystem]  [--fs-args fs_args] [--conf-args conf_args] [--m5-args m5_args] -x gem5_exe "
++    echo "Usage:$0 [-debug] [-n nnodes] [-r rundir] [-c ckptdir] [-p port] [-sw switch]  [--sw-args sw_args] [-fs fullsystem]  [--fs-args fs_args] [--cf-args conf_args] [--m5-args m5_args] -x gem5_exe "
 +    echo "     -debug    : debug mode (start gem5 in gdb)"
 +    echo "     nnodes    : number of gem5 processes"
 +    echo "     rundir    : run simulation under this path. If not specified, current dir will be used"
@@ -206,7 +206,7 @@ new file mode 100755
 +    echo "     sw_args   : switch config specific argument list: arg1 arg2 ..."
 +    echo "     conf_args : common (for both fullsystem and switch) config argument list: arg1 arg2 ..."
 +    echo "     gem5_exe  : gem5 executable (full path required)"
-+    echo "     m5_args   : common m5 options (e.g. debug flags)"
++    echo "     m5_args   : common m5 argument list (e.g. debug flags): arg1 arg2 ..."
 +    echo "Note: if no LSF slots allocation is found all proceses are launched on the localhost."
 +}
 +
@@ -286,12 +286,6 @@ new file mode 100755
 +            ;;
 +    esac
 +done
-+
-+#echo "GEM5_EXE: $GEM5_EXE"
-+#echo "SW_ARGS: $SW_ARGS"
-+#echo "FS_ARGS: $FS_ARGS"
-+#echo "CF_ARGS: $CF_ARGS"
-+#echo "M5_ARGS: $M5_ARGS"
 +
 +# Default values to use (in case they are not defined as command line options)
 +DEFAULT_FS_CONFIG=$M5_PATH/configs/example/fs.py
@@ -480,10 +474,6 @@ new file mode 100755
 +                       --dist-server-name=${HOSTS[0]}                         \
 +                       --dist-server-port=$SW_PORT
 +	    SSH_PIDS[$n]=$!
-+        #if [ "x$GEM5_DEBUG" == "x" ]
-+        #then
-+        #    connected $RUN_DIR/log.$n "socket connected" $j ${SSH_PIDS[$n]}
-+        #fi
 +	((n+=1))
 +    done
 +done
