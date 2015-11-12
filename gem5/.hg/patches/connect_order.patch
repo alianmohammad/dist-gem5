@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent e90b3aa5c9813c81fea15cf229bd84eae8f62cf6
+# Parent 10b2e5b8797494740fbf08acf17245b9b9cdfc6c
 
 diff --git a/src/dev/dist_etherlink.cc b/src/dev/dist_etherlink.cc
 --- a/src/dev/dist_etherlink.cc
@@ -85,16 +85,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
  unsigned DistIface::recvThreadsNum = 0;
  DistIface *DistIface::master = nullptr;
  
-@@ -318,7 +319,7 @@
- DistIface::SyncEvent::process()
- {
-     // We may not start a global periodic sync while draining due to the
--    // possibility of a global deadlock when taking a checkpoint. We will
-+    // possibility of a global deadlock when taking a checkpoint. We would
-     // need a 'distributed drain' solution to eliminate this restriction.
-     panic_if(_draining, "Distributed sync is hit while draining");
-     /*
-@@ -546,6 +547,8 @@
+@@ -554,6 +555,8 @@
          master = this;
          isMaster = true;
      }
@@ -103,7 +94,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
  }
  
  DistIface::~DistIface()
-@@ -622,13 +625,13 @@
+@@ -630,13 +633,13 @@
  }
  
  void
@@ -119,7 +110,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
                                   link_delay);
      recvThreadsNum++;
  }
-@@ -659,6 +662,11 @@
+@@ -667,6 +670,11 @@
      // called exactly once after the system is fully drained.
      sync->drainComplete();
  
@@ -131,7 +122,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
      recvScheduler.serializeSection(cp, "recvScheduler");
      if (this == master) {
          sync->serializeSection(cp, "Sync");
-@@ -668,6 +676,16 @@
+@@ -676,6 +684,16 @@
  void
  DistIface::unserialize(CheckpointIn &cp)
  {
@@ -148,7 +139,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
      recvScheduler.unserializeSection(cp, "recvScheduler");
      if (this == master) {
          sync->unserializeSection(cp, "Sync");
-@@ -675,8 +693,19 @@
+@@ -683,8 +701,19 @@
  }
  
  void
@@ -237,7 +228,23 @@ diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
 diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 --- a/src/dev/tcp_iface.cc
 +++ b/src/dev/tcp_iface.cc
-@@ -77,9 +77,9 @@
+@@ -53,6 +53,7 @@
+ 
+ #include <cerrno>
+ #include <cstring>
++#include <vector>
+ 
+ #include "base/types.hh"
+ #include "debug/DistEthernet.hh"
+@@ -68,6 +69,7 @@
+ 
+ using namespace std;
+ 
++std::vector<std::pair<TCPIface::NodeInfo, int> > TCPIface::nodes;
+ vector<int> TCPIface::sockRegistry;
+ int TCPIface::fdStatic = -1;
+ bool TCPIface::anyListening = false;
+@@ -77,9 +79,30 @@
                     Tick sync_start, Tick sync_repeat,
                     EventManager *em, bool is_switch, int num_nodes) :
      DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
@@ -246,10 +253,31 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +    serverPort(server_port), isSwitch(is_switch), listening(false)
  {
 -    establishConnection(server_name, server_port);
++    if (is_switch && isMaster) {
++        while (!listen(serverPort)) {
++            DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n",
++                    serverPort);
++            serverPort++;
++        }
++        inform("tcp_iface listening on port %d", serverPort);
++        // Now accept the first connection requests from each compute node and
++        // store the node info. The compute nodes will then wait for ack
++        // messages. Ack messages will be sent by initTransport() in the
++        // appropriate order to make sure that every compute node is always
++        // connected to the same switch port.
++        NodeInfo ni;
++        for (int i = 0; i < size; i++) {
++            accept();
++            DPRINTF(DistEthernet, "First connection, waiting for link info\n");
++            if (!recvTCP(sock, &ni, sizeof(ni)))
++                panic("Failed to receive link info");
++            nodes.push_back(make_pair(ni, sock));
++        }
++    }
  }
  
  bool
-@@ -117,25 +117,76 @@
+@@ -117,25 +140,63 @@
      anyListening = true;
      return true;
  }
@@ -259,76 +287,65 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +TCPIface::establishConnection()
  {
 +    static unsigned cur_rank = 0;
-+    bool link_okay = false;
-+    struct {
-+        unsigned rank;
-+        unsigned dist_iface_id;
-+        unsigned dist_iface_num;
-+    } buf;
++    static unsigned cur_id = 0;
++    NodeInfo ni;
++
      if (isSwitch) {
-         if (isMaster) {
+-        if (isMaster) {
 -            while (!listen(port)) {
 -                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n"
 -                        , port);
 -                port++;
-+            while (!listen(serverPort)) {
-+                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n",
-+                        serverPort);
-+                serverPort++;
-             }
+-            }
 -            inform("tcp_iface listening on port %d", port);
-+            inform("tcp_iface listening on port %d", serverPort);
++        if (cur_id == 0) { // first connection accepted in the ctor already
++            auto const &iface0 =
++                find_if(nodes.begin(), nodes.end(),
++                        [](const pair<NodeInfo, int> &cn) -> bool {
++                            return cn.first.rank == cur_rank;
++                        });
++            assert(iface0 != nodes.end());
++            assert(iface0->first.distIfaceId == 0);
++            sock = iface0->second;
++            ni = iface0->first;
++        } else { // additional connections from the same compute node
++            accept();
++            DPRINTF(DistEthernet, "Next connection, waiting for link info\n");
++            if (!recvTCP(sock, &ni, sizeof(ni)))
++                panic("Failed to receive link info");
++            assert(ni.rank == cur_rank);
++            assert(ni.distIfaceId == cur_id);
          }
 -        accept();
 -    } else {
 -        connect(server_name, port);
 -        inform("socket connected");
-+        do {
-+            accept();
-+            DPRINTF(DistEthernet, "New connection, waiting for link info\n");
-+            if (!recvTCP(sock, &buf, sizeof(buf)))
-+                panic("Failed to receive link info");
-+            if (buf.rank == cur_rank) {
-+                link_okay = true;
-+                inform("Link okay  (iface:%d -> (node:%d, iface:%d))",
-+                       distIfaceId, buf.rank, buf.dist_iface_id);
-+                if (buf.dist_iface_id == buf.dist_iface_num - 1)
-+                    cur_rank++;
-+               // send back ack
-+                buf.dist_iface_id = distIfaceId;
-+                buf.dist_iface_num = distIfaceNum;
-+                sendTCP(sock, &buf, sizeof(buf));
-+            } else {
-+                DPRINTF(DistEthernet, "Connection is out of order (rank:%d)\n",
-+                        buf.rank);
-+                // send back cancel
-+                buf.rank = cur_rank;
-+                sendTCP(sock, &buf, sizeof(buf));
-+                close(sock);
-+            }
-+        } while (!link_okay);
++        inform("Link okay  (iface:%d -> (node:%d, iface:%d))",
++               distIfaceId, ni.rank, ni.distIfaceId);
++        if (ni.distIfaceId < ni.distIfaceNum - 1) {
++            cur_id++;
++        } else {
++            cur_rank++;
++            cur_id = 0;
++        }
++        // send ack
++        ni.distIfaceId = distIfaceId;
++        ni.distIfaceNum = distIfaceNum;
++        sendTCP(sock, &ni, sizeof(ni));
 +    } else { // this is not a switch
-+        do {
-+            connect();
-+            // send link info
-+            buf.rank = rank;
-+            buf.dist_iface_id = distIfaceId;
-+            buf.dist_iface_num = distIfaceNum;
-+            sendTCP(sock, &buf, sizeof(buf));
-+            DPRINTF(DistEthernet, "Connected, waiting for ack\n");
-+            if (!recvTCP(sock, &buf, sizeof(buf)))
-+                panic("Failed to receive ack");
-+            if (buf.rank != rank) {
-+                DPRINTF(DistEthernet, "Connection is out of order"
-+                        " (cur_rank:%d)\n", buf.rank);
-+                close(sock);
-+                usleep(10000*abs((int)rank - (int)buf.rank));
-+            } else {
-+                link_okay = true;
-+                inform("Link okay  (iface:%d -> switch iface:%d)", distIfaceId,
-+                       buf.dist_iface_id);
-+            }
-+        } while (!link_okay);
++        connect();
++        // send link info
++        ni.rank = rank;
++        ni.distIfaceId = distIfaceId;
++        ni.distIfaceNum = distIfaceNum;
++        sendTCP(sock, &ni, sizeof(ni));
++        DPRINTF(DistEthernet, "Connected, waiting for ack (distIfaceId:%d\n",
++                distIfaceId);
++        if (!recvTCP(sock, &ni, sizeof(ni)))
++            panic("Failed to receive ack");
++        assert(ni.rank == rank);
++        inform("Link okay  (iface:%d -> switch iface:%d)", distIfaceId,
++               ni.distIfaceId);
      }
 +    sockRegistry.push_back(sock);
 +}
@@ -337,7 +354,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
  void
  TCPIface::accept()
  {
-@@ -148,16 +199,15 @@
+@@ -148,16 +209,15 @@
                           sizeof(i)) < 0)
              warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
      }
@@ -356,7 +373,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
  
       sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
       panic_if(sock < 0, "socket() failed: %s", strerror(errno));
-@@ -171,20 +221,18 @@
+@@ -171,20 +231,18 @@
       addr_hint.ai_socktype = SOCK_STREAM;
       addr_hint.ai_protocol = IPPROTO_TCP;
  
@@ -379,7 +396,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
  }
  
  TCPIface::~TCPIface()
-@@ -269,4 +317,11 @@
+@@ -269,4 +327,11 @@
      packet->length = header.dataPacketLength;
  }
  
@@ -405,7 +422,26 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
      bool isSwitch;
  
      bool listening;
-@@ -100,11 +103,11 @@
+@@ -74,7 +77,17 @@
+     static int fdStatic;
+ 
+     /**
+-     * Registry for all sockets to the server opened by this gem5 process.
++     * Compute node info and storage for the very first connection from each
++     * node (used by the switch)
++     */
++    struct NodeInfo {
++        unsigned rank;
++        unsigned distIfaceId;
++        unsigned distIfaceNum;
++    };
++    static std::vector<std::pair<NodeInfo, int> > nodes;
++    /**
++     * Storage for all opened sockets
+      */
+     static std::vector<int> sockRegistry;
+ 
+@@ -100,11 +113,11 @@
      bool recvTCP(int sock, void *buf, unsigned length);
      bool listen(int port);
      void accept();
@@ -419,7 +455,7 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  
    protected:
  
-@@ -117,6 +120,8 @@
+@@ -117,6 +130,8 @@
  
      void recvPacket(const Header &header, EthPacketPtr &packet) override;
  
