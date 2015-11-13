@@ -2,4 +2,3 @@ add-initparam-key.patch
 dist_link.patch
 dist_config.patch
 dist_switch.patch
-connect_order.patch

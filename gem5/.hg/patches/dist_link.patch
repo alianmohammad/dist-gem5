@@ -67,7 +67,7 @@ diff --git a/src/dev/dist_etherlink.cc b/src/dev/dist_etherlink.cc
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_etherlink.cc
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,267 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -142,7 +142,7 @@ new file mode 100644
 +using namespace std;
 +
 +DistEtherLink::DistEtherLink(const Params *p)
-+    : EtherObject(p)
++    : EtherObject(p), linkDelay(p->delay)
 +{
 +    DPRINTF(DistEthernet,"DistEtherLink::DistEtherLink() "
 +            "link delay:%llu ticksPerByte:%f\n", p->delay, p->speed);
@@ -209,7 +209,7 @@ new file mode 100644
 +DistEtherLink::init()
 +{
 +    DPRINTF(DistEthernet,"DistEtherLink::init() called\n");
-+    distIface->init();
++    distIface->init(rxLink->doneEvent(), linkDelay);
 +}
 +
 +void
@@ -224,11 +224,6 @@ new file mode 100644
 +{
 +    assert(!distIface);
 +    distIface = m;
-+    // Spawn a new receiver thread that will process messages
-+    // coming in from peer gem5 processes.
-+    // The receive thread will also schedule a (receive) doneEvent
-+    // for each incoming data packet.
-+    distIface->spawnRecvThread(&doneEvent, linkDelay);
 +}
 +
 +void
@@ -344,7 +339,7 @@ diff --git a/src/dev/dist_etherlink.hh b/src/dev/dist_etherlink.hh
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_etherlink.hh
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,240 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -508,20 +503,24 @@ new file mode 100644
 +        void rxDone();
 +        typedef EventWrapper<RxLink, &RxLink::rxDone> DoneEvent;
 +        friend void DoneEvent::process();
-+        DoneEvent doneEvent;
++        DoneEvent _doneEvent;
 +
 +      public:
 +
 +        RxLink(const std::string &name, DistEtherLink *p,
 +               Tick delay, EtherDump *d) :
-+            Link(name, p, d, &doneEvent),
-+            linkDelay(delay), doneEvent(this) {}
++            Link(name, p, d, &_doneEvent),
++            linkDelay(delay), _doneEvent(this) {}
 +        ~RxLink() {}
 +
 +        /**
 +         * Register our dist interface to talk to the peer gem5 processes.
 +         */
 +        void setDistInt(DistIface *m);
++        /**
++         * Done events will be scheduled by DistIface (so we need the accessor)
++         */
++        const DoneEvent *doneEvent() const { return &_doneEvent; }
 +    };
 +
 +    /**
@@ -557,6 +556,8 @@ new file mode 100644
 +    RxLink *rxLink;
 +    LocalIface *localIface;
 +
++    Tick linkDelay;
++
 +  public:
 +    typedef DistEtherLinkParams Params;
 +    DistEtherLink(const Params *p);
@@ -583,7 +584,7 @@ diff --git a/src/dev/dist_iface.cc b/src/dev/dist_iface.cc
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_iface.cc
-@@ -0,0 +1,771 @@
+@@ -0,0 +1,808 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -643,6 +644,7 @@ new file mode 100644
 +using namespace std;
 +DistIface::Sync *DistIface::sync = nullptr;
 +DistIface::SyncEvent *DistIface::syncEvent = nullptr;
++unsigned DistIface::distIfaceNum = 0;
 +unsigned DistIface::recvThreadsNum = 0;
 +DistIface *DistIface::master = nullptr;
 +
@@ -903,10 +905,18 @@ new file mode 100644
 +void
 +DistIface::SyncEvent::process()
 +{
-+    // We may not start a global periodic sync while draining due to the
-+    // possibility of a global deadlock when taking a checkpoint. We will
-+    // need a 'distributed drain' solution to eliminate this restriction.
-+    panic_if(_draining, "Distributed sync is hit while draining");
++    // We may not start a global periodic sync while draining before taking a
++    // checkpoint.  This is due to the possibility that peer gem5 processes
++    // may not hit the same periodic sync before they complete draining and
++    // that would make this periodic sync clash with sync called from
++    // DistIface::serialize() by other gem5 processes.
++    // We would need a 'distributed drain' solution to eliminate this
++    // restriction.
++    // Note that if draining was not triggered by checkpointing then we are
++    // fine since no extra global sync will happen (i.e. all peer gem5 will
++    // hit this periodic sync eventually).
++    panic_if(_draining && DistIface::sync->doCkpt,
++             "Distributed sync is hit while draining");
 +    /*
 +     * Note that this is a global event so this process method will be called
 +     * by only exactly one thread.
@@ -1132,6 +1142,8 @@ new file mode 100644
 +        master = this;
 +        isMaster = true;
 +    }
++    distIfaceId = distIfaceNum;
++    distIfaceNum++;
 +}
 +
 +DistIface::~DistIface()
@@ -1208,13 +1220,13 @@ new file mode 100644
 +}
 +
 +void
-+DistIface::spawnRecvThread(Event *recv_done, Tick link_delay)
++DistIface::spawnRecvThread(const Event *recv_done, Tick link_delay)
 +{
 +    assert(recvThread == nullptr);
 +
 +    recvThread = new std::thread(&DistIface::recvThreadFunc,
 +                                 this,
-+                                 recv_done,
++                                 const_cast<Event *>(recv_done),
 +                                 link_delay);
 +    recvThreadsNum++;
 +}
@@ -1245,6 +1257,11 @@ new file mode 100644
 +    // called exactly once after the system is fully drained.
 +    sync->drainComplete();
 +
++    unsigned rank_orig = rank, dist_iface_id_orig = distIfaceId;
++
++    SERIALIZE_SCALAR(rank_orig);
++    SERIALIZE_SCALAR(dist_iface_id_orig);
++
 +    recvScheduler.serializeSection(cp, "recvScheduler");
 +    if (this == master) {
 +        sync->serializeSection(cp, "Sync");
@@ -1254,6 +1271,16 @@ new file mode 100644
 +void
 +DistIface::unserialize(CheckpointIn &cp)
 +{
++    unsigned rank_orig, dist_iface_id_orig;
++    UNSERIALIZE_SCALAR(rank_orig);
++    UNSERIALIZE_SCALAR(dist_iface_id_orig);
++
++    panic_if(rank != rank_orig, "Rank mismatch at resume (rank=%d, orig=%d)",
++             rank, rank_orig);
++    panic_if(distIfaceId != dist_iface_id_orig, "Dist iface ID mismatch "
++             "at resume (distIfaceId=%d, orig=%d)", distIfaceId,
++             dist_iface_id_orig);
++
 +    recvScheduler.unserializeSection(cp, "recvScheduler");
 +    if (this == master) {
 +        sync->unserializeSection(cp, "Sync");
@@ -1261,8 +1288,19 @@ new file mode 100644
 +}
 +
 +void
-+DistIface::init()
++DistIface::init(const Event *done_event, Tick link_delay)
 +{
++    // Init hook for the underlaying message transport to setup/finalize
++    // communication channels
++    initTransport();
++
++    // Spawn a new receiver thread that will process messages
++    // coming in from peer gem5 processes.
++    // The receive thread will also schedule a (receive) doneEvent
++    // for each incoming data packet.
++    spawnRecvThread(done_event, link_delay);
++
++
 +    // Adjust the periodic sync start and interval. Different DistIface
 +    // might have different requirements. The singleton sync object
 +    // will select the minimum values for both params.
@@ -1359,7 +1397,7 @@ diff --git a/src/dev/dist_iface.hh b/src/dev/dist_iface.hh
 new file mode 100644
 --- /dev/null
 +++ b/src/dev/dist_iface.hh
-@@ -0,0 +1,585 @@
+@@ -0,0 +1,594 @@
 +/*
 + * Copyright (c) 2015 ARM Limited
 + * All rights reserved
@@ -1808,15 +1846,20 @@ new file mode 100644
 +     * The number of gem5 processes comprising this dist simulation.
 +     */
 +    unsigned size;
++    /**
++     * Number of DistIface objects (i.e. dist links in this gem5 process)
++     */
++    static unsigned distIfaceNum;
++    /**
++     * Unique id for the dist link
++     */
++    unsigned distIfaceId;
 +
 +    bool isMaster;
 +
 +  private:
 +    /**
-+     * Total number of receiver threads (in this gem5 process).
-+     * During the simulation it should be constant and equal to the
-+     * number of DistIface objects (i.e. simulated Ethernet
-+     * links).
++     * Number of receiver threads (in this gem5 process)
 +     */
 +    static unsigned recvThreadsNum;
 +    /**
@@ -1860,6 +1903,17 @@ new file mode 100644
 +     */
 +    virtual void recvPacket(const Header &header, EthPacketPtr &packet) = 0;
 +    /**
++     * Init hook for the underlaying transport
++     */
++    virtual void initTransport() = 0;
++    /**
++     * spawn the receiver thread.
++     * @param recv_done The receive done event associated with the simulated
++     * Ethernet link.
++     * @param link_delay The link delay for the simulated Ethernet link.
++     */
++    void spawnRecvThread(const Event *recv_done, Tick link_delay);
++    /**
 +     * The function executed by a receiver thread.
 +     */
 +    void recvThreadFunc(Event *recv_done, Tick link_delay);
@@ -1897,17 +1951,10 @@ new file mode 100644
 +     * receive queue is not empty.
 +     */
 +    EthPacketPtr packetIn() { return recvScheduler.popPacket(); }
-+    /**
-+     * spawn the receiver thread.
-+     * @param recv_done The receive done event associated with the simulated
-+     * Ethernet link.
-+     * @param link_delay The link delay for the simulated Ethernet link.
-+     */
-+    void spawnRecvThread(Event *recv_done, Tick link_delay);
 +
 +    DrainState drain() override;
 +    void drainResume() override;
-+    void init();
++    void init(const Event *e, Tick link_delay);
 +    void startup();
 +
 +    void serialize(CheckpointOut &cp) const override;
@@ -3979,7 +4026,7 @@ deleted file mode 100644
 diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 --- a/src/dev/tcp_iface.cc
 +++ b/src/dev/tcp_iface.cc
-@@ -35,10 +35,11 @@
+@@ -35,25 +35,35 @@
   * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   *
   * Authors: Gabor Dozsa
@@ -3992,26 +4039,36 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
   */
  
  #include "dev/tcp_iface.hh"
-@@ -48,12 +49,15 @@
+ 
+ #include <arpa/inet.h>
+ #include <netdb.h>
++#include <netinet/tcp.h>
  #include <sys/socket.h>
  #include <sys/types.h>
  #include <unistd.h>
-+#include <netinet/tcp.h>
  
  #include <cerrno>
  #include <cstring>
++#include <vector>
  
  #include "base/types.hh"
 -#include "debug/MultiEthernet.hh"
 +#include "debug/DistEthernet.hh"
 +#include "debug/DistEthernetCmd.hh"
 +#include "sim/sim_exit.hh"
++
++#if defined(__FreeBSD__)
++#include <netinet/in.h>
++
++#endif
  
  // MSG_NOSIGNAL does not exists on OS X
  #if defined(__APPLE__) || defined(__MACH__)
-@@ -65,41 +69,122 @@
+@@ -64,42 +74,180 @@
+ 
  using namespace std;
  
++std::vector<std::pair<TCPIface::NodeInfo, int> > TCPIface::nodes;
  vector<int> TCPIface::sockRegistry;
 +int TCPIface::fdStatic = -1;
 +bool TCPIface::anyListening = false;
@@ -4024,9 +4081,30 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +                   Tick sync_start, Tick sync_repeat,
 +                   EventManager *em, bool is_switch, int num_nodes) :
 +    DistIface(dist_rank, dist_size, sync_start, sync_repeat, em,
-+               is_switch, num_nodes), isSwitch(is_switch), listening(false)
++              is_switch, num_nodes), serverName(server_name),
++    serverPort(server_port), isSwitch(is_switch), listening(false)
 +{
-+    establishConnection(server_name, server_port);
++    if (is_switch && isMaster) {
++        while (!listen(serverPort)) {
++            DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n",
++                    serverPort);
++            serverPort++;
++        }
++        inform("tcp_iface listening on port %d", serverPort);
++        // Now accept the first connection requests from each compute node and
++        // store the node info. The compute nodes will then wait for ack
++        // messages. Ack messages will be sent by initTransport() in the
++        // appropriate order to make sure that every compute node is always
++        // connected to the same switch port.
++        NodeInfo ni;
++        for (int i = 0; i < size; i++) {
++            accept();
++            DPRINTF(DistEthernet, "First connection, waiting for link info\n");
++            if (!recvTCP(sock, &ni, sizeof(ni)))
++                panic("Failed to receive link info");
++            nodes.push_back(make_pair(ni, sock));
++        }
++    }
 +}
 +
 +bool
@@ -4064,25 +4142,63 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +    anyListening = true;
 +    return true;
 +}
-+void
-+TCPIface::establishConnection(string server_name, int port)
-+{
-+    if (isSwitch) {
-+        if (isMaster) {
-+            while (!listen(port)) {
-+                DPRINTF(DistEthernet, "TCPIface(listen): Can't bind port %d\n"
-+                        , port);
-+                port++;
-+            }
-+            inform("tcp_iface listening on port %d", port);
-+        }
-+        accept();
-+    } else {
-+        connect(server_name, port);
-+        inform("socket connected");
-+    }
 +
++void
++TCPIface::establishConnection()
++{
++    static unsigned cur_rank = 0;
++    static unsigned cur_id = 0;
++    NodeInfo ni;
++
++    if (isSwitch) {
++        if (cur_id == 0) { // first connection accepted in the ctor already
++            auto const &iface0 =
++                find_if(nodes.begin(), nodes.end(),
++                        [](const pair<NodeInfo, int> &cn) -> bool {
++                            return cn.first.rank == cur_rank;
++                        });
++            assert(iface0 != nodes.end());
++            assert(iface0->first.distIfaceId == 0);
++            sock = iface0->second;
++            ni = iface0->first;
++        } else { // additional connections from the same compute node
++            accept();
++            DPRINTF(DistEthernet, "Next connection, waiting for link info\n");
++            if (!recvTCP(sock, &ni, sizeof(ni)))
++                panic("Failed to receive link info");
++            assert(ni.rank == cur_rank);
++            assert(ni.distIfaceId == cur_id);
++        }
++        inform("Link okay  (iface:%d -> (node:%d, iface:%d))",
++               distIfaceId, ni.rank, ni.distIfaceId);
++        if (ni.distIfaceId < ni.distIfaceNum - 1) {
++            cur_id++;
++        } else {
++            cur_rank++;
++            cur_id = 0;
++        }
++        // send ack
++        ni.distIfaceId = distIfaceId;
++        ni.distIfaceNum = distIfaceNum;
++        sendTCP(sock, &ni, sizeof(ni));
++    } else { // this is not a switch
++        connect();
++        // send link info
++        ni.rank = rank;
++        ni.distIfaceId = distIfaceId;
++        ni.distIfaceNum = distIfaceNum;
++        sendTCP(sock, &ni, sizeof(ni));
++        DPRINTF(DistEthernet, "Connected, waiting for ack (distIfaceId:%d\n",
++                distIfaceId);
++        if (!recvTCP(sock, &ni, sizeof(ni)))
++            panic("Failed to receive ack");
++        assert(ni.rank == rank);
++        inform("Link okay  (iface:%d -> switch iface:%d)", distIfaceId,
++               ni.distIfaceId);
++    }
++    sockRegistry.push_back(sock);
 +}
++
 +void
 +TCPIface::accept()
 +{
@@ -4095,18 +4211,17 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +                         sizeof(i)) < 0)
 +            warn("ListenSocket(accept): setsockopt() TCP_NODELAY failed!");
 +    }
-+    sockRegistry.push_back(sock);
 +}
 +
 +void
-+TCPIface::connect(std::string server_name, int server_port)
++TCPIface::connect()
  {
      struct addrinfo addr_hint, *addr_results;
 -    int ret;
 +     int ret;
  
 -    string port_str = to_string(server_port);
-+     string port_str = to_string(server_port);
++     string port_str = to_string(serverPort);
  
 -    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 -    panic_if(sock < 0, "socket() failed: %s", strerror(errno));
@@ -4131,7 +4246,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
  
 -    DPRINTF(MultiEthernet, "Connecting to %s:%u\n",
 -            server_name.c_str(), port_str.c_str());
-+     ret = getaddrinfo(server_name.c_str(), port_str.c_str(),
++     ret = getaddrinfo(serverName.c_str(), port_str.c_str(),
 +                       &addr_hint, &addr_results);
 +     panic_if(ret < 0, "getaddrinf() failed: %s", strerror(errno));
  
@@ -4139,7 +4254,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 -                    addr_results->ai_addrlen);
 -    panic_if(ret < 0, "connect() failed: %s", strerror(errno));
 +     DPRINTF(DistEthernet, "Connecting to %s:%s\n",
-+             server_name.c_str(), port_str.c_str());
++             serverName.c_str(), port_str.c_str());
  
 -    freeaddrinfo(addr_results);
 -    // add our socket to the static registry
@@ -4151,12 +4266,10 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +     panic_if(ret < 0, "connect() failed: %s", strerror(errno));
 +
 +     freeaddrinfo(addr_results);
-+
-+     sockRegistry.push_back(sock);
  }
  
  TCPIface::~TCPIface()
-@@ -111,12 +196,20 @@
+@@ -111,12 +259,20 @@
  }
  
  void
@@ -4179,7 +4292,7 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
      panic_if(ret != length, "send() failed");
  }
  
-@@ -140,19 +233,40 @@
+@@ -140,19 +296,47 @@
  }
  
  void
@@ -4232,7 +4345,14 @@ diff --git a/src/dev/tcp_iface.cc b/src/dev/tcp_iface.cc
 +    packet->length = header.dataPacketLength;
 +}
 +
-+
++void
++TCPIface::initTransport()
++{
++    // We cannot setup the conections in the constructor beacuse the number
++    // of dist interfaces (per process) is unknown until the (simobject) init
++    // phase. That information is necessary for global connection ordering.
++    establishConnection();
++}
 diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
 --- a/src/dev/tcp_iface.hh
 +++ b/src/dev/tcp_iface.hh
@@ -4274,10 +4394,13 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  {
    private:
      /**
-@@ -67,6 +67,12 @@
+@@ -67,8 +67,27 @@
       */
      int sock;
  
++    std::string serverName;
++    int serverPort;
++
 +    bool isSwitch;
 +
 +    bool listening;
@@ -4285,9 +4408,22 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
 +    static int fdStatic;
 +
      /**
-      * Registry for all sockets to the server opened by this gem5 process.
+-     * Registry for all sockets to the server opened by this gem5 process.
++     * Compute node info and storage for the very first connection from each
++     * node (used by the switch)
++     */
++    struct NodeInfo {
++        unsigned rank;
++        unsigned distIfaceId;
++        unsigned distIfaceNum;
++    };
++    static std::vector<std::pair<NodeInfo, int> > nodes;
++    /**
++     * Storage for all opened sockets
       */
-@@ -82,7 +88,7 @@
+     static std::vector<int> sockRegistry;
+ 
+@@ -82,7 +101,7 @@
       * @param length Size of the message in bytes.
       */
      void
@@ -4296,18 +4432,18 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
  
      /**
       * Receive the next incoming message through a TCP stream socket.
-@@ -92,24 +98,24 @@
+@@ -92,24 +111,26 @@
       * @param length Exact size of the expected message in bytes.
       */
      bool recvTCP(int sock, void *buf, unsigned length);
 -
 +    bool listen(int port);
 +    void accept();
-+    void connect(std::string server_name, int port);
++    void connect();
 +    int getfdStatic() const { return fdStatic; }
 +    bool islistening() const { return listening; }
 +    bool anyislistening() const { return anyListening; }
-+    void establishConnection(std::string server_name, int port);
++    void establishConnection();
  
    protected:
  
@@ -4331,10 +4467,12 @@ diff --git a/src/dev/tcp_iface.hh b/src/dev/tcp_iface.hh
 +    bool recvHeader(Header &header) override;
 +
 +    void recvPacket(const Header &header, EthPacketPtr &packet) override;
++
++    void initTransport() override;
  
    public:
      /**
-@@ -118,14 +124,15 @@
+@@ -118,14 +139,15 @@
       * server process.
       * @param server_port The port number the server listening for new
       * connections.

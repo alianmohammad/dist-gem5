@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 6eeeb1d182d71bf80c25233cdadf5cd6ba151cbd
+# Parent 4579625363dec571b0360fb4b51c74ea5aac7140
 dist: Config file and parameter changes for distributed gem5 simulations
 
 Distributed gem5 is the result of the convergence effort between multi-gem5 and pd-gem5 (from Univ. of Wisconsin). It relies on the base multi-gem5 infrastructure for packet forwarding, synchronisation and checkpointing but combines those with the elaborated network switch model from pd-gem5. Univ. of Wisconsin will push the switch model directly to the public gem5 repo.
@@ -57,8 +57,8 @@ diff --git a/configs/common/Options.py b/configs/common/Options.py
 +    parser.add_option("--dist", action="store_true",
 +                      help="Parallel distributed gem5 simulation.")
 +    parser.add_option("--is-switch", action="store_true",
-+                      help="Select the network switch simulator within a dist"\
-+                      "gem5 run")
++                      help="Select the network switch simulator process for a"\
++                      "distributed gem5 run")
 +    parser.add_option("--dist-rank", default=0, action="store", type="int",
 +                      help="Rank of this system within the dist gem5 run.")
 +    parser.add_option("--dist-size", default=0, action="store", type="int",
@@ -118,7 +118,7 @@ diff --git a/util/dist/gem5-dist.sh b/util/dist/gem5-dist.sh
 new file mode 100755
 --- /dev/null
 +++ b/util/dist/gem5-dist.sh
-@@ -0,0 +1,384 @@
+@@ -0,0 +1,385 @@
 +#! /bin/bash
 +
 +#
@@ -428,16 +428,17 @@ new file mode 100755
 +# make sure that CKPT_DIR exists
 +mkdir -p $CKPT_DIR/m5out.switch > /dev/null 2>&1
 +# launch switch gem5
-+echo "launch switch gem5 process ..."
-+$GEM5_EXE -d $RUN_DIR/m5out.switch                                            \
++SW_HOST=${HOSTS[0]}
++echo "launch switch gem5 process on $SW_HOST ..."
++start_func "switch" $SW_HOST "$ENV_ARGS" $GEM5_EXE -d $RUN_DIR/m5out.switch   \
 +          $M5_ARGS                                                            \
-+          $SW_CONFIG                                                      \
++          $SW_CONFIG                                                          \
 +          $SW_ARGS                                                            \
 +          $CF_ARGS                                                            \
 +          --checkpoint-dir=$CKPT_DIR/m5out.switch                             \
 +          --is-switch                                                         \
 +          --dist-size=$NNODES                                                 \
-+          --dist-server-port=$SW_PORT &> $RUN_DIR/log.switch &
++          --dist-server-port=$SW_PORT
 +SW_PID=$!
 +
 +# block here till switch process starts
@@ -774,7 +775,7 @@ diff --git a/util/dist/test/test-2nodes-AArch64.sh b/util/dist/test/test-2nodes-
 new file mode 100644
 --- /dev/null
 +++ b/util/dist/test/test-2nodes-AArch64.sh
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,73 @@
 +#! /bin/bash
 +
 +#
@@ -824,11 +825,6 @@ new file mode 100644
 +
 +GEM5_DIR=$(pwd)/$(dirname $0)/../../..
 +
-+#M5_PATH=$HOME/GEM5/public_dist
-+#export M5_PATH
-+
-+
-+
 +IMG=$M5_PATH/disks/aarch64-ubuntu-trusty-headless.img
 +VMLINUX=$M5_PATH/binaries/vmlinux.aarch64.20140821
 +DTB=$M5_PATH/binaries/vexpress.aarch64.20140821.dtb
@@ -839,12 +835,12 @@ new file mode 100644
 +BOOT_SCRIPT=$GEM5_DIR/util/dist/test/bootscript.rcS
 +GEM5_DIST_SH=$GEM5_DIR/util/dist/gem5-dist.sh
 +
-+DEBUG_FLAGS="-d DistEthernet,DistEthernetPkt"
++DEBUG_FLAGS="-d DistEthernet"
 +#CHKPT_RESTORE="-r1"
 +
 +NNODES=2
 +
-+$GEM5_DIST_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE   \
++$GEM5_DIST_SH $DEBUG_FLAGS -n $NNODES -f $SYS_CONFIG $GEM5_EXE \
 +    --cpu-type=atomic                                          \
 +    --num-cpus=1                                               \
 +    --machine-type=VExpress_EMM64                              \
